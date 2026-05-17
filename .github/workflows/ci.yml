@@ -7,25 +7,54 @@ on:
     branches: [main, develop]
 
 jobs:
+  #  lint-frontend — the internal ID of this job, used by GitHub internally
   lint-frontend:
+
+    #  the human-readable name shown on GitHub UI when the workflow runs
     name: Lint Frontend
+
+    # spin up a fresh Ubuntu Linux machine to run this job
     runs-on: ubuntu-latest
+
+    # Sets the default folder for all run commands in this job so every run step will automatically execute inside the frontend/ folder
     defaults:
       run:
         working-directory: frontend
     steps:
+
+      # downloads repo code onto the machine
       - uses: actions/checkout@v4
 
+      # Label shown in GitHub UI for this step
       - name: Setup Node.js
+
+      # Use GitHub's official action to install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+          # Enable caching — save downloaded packages for next run
           cache: npm
+
+          # Use this file to identify the cache — if lockfile changes, cache refreshe
           cache-dependency-path: frontend/package-lock.json
 
+      # installs all packages listed in package-lock.json
+      # Runs inside frontend/ folder automatically (because of defaults we set above)
+      # ci = clean install — faster and stricter than npm install
       - name: Install dependencies
         run: npm ci
+      
+      # This is the actual check — runs ESLint on your frontend code
+      # ESLint scans your JavaScript/TypeScript files for:
 
+      # Code style issues
+      # Bad practices
+      # Syntax errors
+
+      # If any issue is found → step fails  → whole job fails → PR is blocked
+
+      # ESLint is a code quality tool that reads your JavaScript/TypeScript code and tells you — "Hey, this part of your code is wrong, messy, or follows bad practices."
       - name: Run ESLint
         run: npm run lint
 
@@ -47,7 +76,32 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+      
+      # What is Prisma?
 
+      # Prisma is an ORM (Object Relational Mapper) — it lets your backend talk to the database using TypeScript instead of raw SQL
+
+      # What does prisma generate do?
+
+      # Reads your schema.prisma file
+      # Auto-generates TypeScript types based on your database models
+      # Places them inside node_modules/@prisma/client
+
+      # Why is it needed BEFORE linting?
+      # Your backend code does this:
+      # import { PrismaClient } from '@prisma/client'
+      # ↑
+      # This is auto-generated code
+      # It doesn't exist until you run
+      # prisma generate
+
+      # If you skip this step and run ESLint directly
+      # ESLint sees @prisma/client types are missing
+      # ESLint throws type errors 
+      # So Prisma Client must be generated before linting runs
+
+      # Simple analogy
+      # "It's like trying to use a tool that hasn't been built yet. prisma generate builds the tool first, then ESLint can use it."
       - name: Generate Prisma Client
         run: npx prisma generate
 
