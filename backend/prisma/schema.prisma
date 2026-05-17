@@ -1,0 +1,134 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// USER MODEL
+// ==========================================
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  avatar    String?
+  role      Role     @default(USER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  submissions    Submission[]
+  userTopicStats UserTopicStat[]
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ==========================================
+// PROBLEM MODEL
+// ==========================================
+model Problem {
+  id          String     @id @default(uuid())
+  title       String     @unique
+  description String     @db.Text
+  difficulty  Difficulty
+  topic       String
+  subtopic    String?
+  constraints String?    @db.Text
+  inputFormat String?    @map("input_format") @db.Text
+  outputFormat String?   @map("output_format") @db.Text
+  sampleInput  String?   @map("sample_input") @db.Text
+  sampleOutput String?   @map("sample_output") @db.Text
+  editorial   String?    @db.Text
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  submissions Submission[]
+  testCases   TestCase[]
+
+  @@map("problems")
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+// ==========================================
+// TEST CASE MODEL
+// ==========================================
+model TestCase {
+  id        String  @id @default(uuid())
+  problemId String  @map("problem_id")
+  input     String  @db.Text
+  output    String  @db.Text
+  isHidden  Boolean @default(true) @map("is_hidden")
+
+  // Relations
+  problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  @@map("test_cases")
+}
+
+// ==========================================
+// SUBMISSION MODEL
+// ==========================================
+model Submission {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  problemId     String   @map("problem_id")
+  language      String
+  code          String   @db.Text
+  verdict       Verdict  @default(PENDING)
+  executionTime Int?     @map("execution_time") // in milliseconds
+  memoryUsage   Int?     @map("memory_usage")   // in KB
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  @@map("submissions")
+}
+
+enum Verdict {
+  PENDING
+  ACCEPTED
+  WRONG_ANSWER
+  RUNTIME_ERROR
+  COMPILATION_ERROR
+  TIME_LIMIT_EXCEEDED
+  MEMORY_LIMIT_EXCEEDED
+}
+
+// ==========================================
+// USER TOPIC STATS MODEL
+// ==========================================
+model UserTopicStat {
+  id              String @id @default(uuid())
+  userId          String @map("user_id")
+  topic           String
+  solved          Int    @default(0)
+  failed          Int    @default(0)
+  accuracy        Float  @default(0)
+  confidenceScore Float  @default(0) @map("confidence_score")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topic])
+  @@map("user_topic_stats")
+}

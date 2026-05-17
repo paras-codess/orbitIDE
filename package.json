@@ -1,0 +1,35 @@
+{
+  "name": "orbitide-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-Powered Collaborative Coding, Visualization, and Interview Preparation Platform",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:backend": "npm run dev --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "lint:frontend": "npm run lint --workspace=frontend",
+    "lint:backend": "npm run lint --workspace=backend",
+    "lint": "npm run lint:frontend && npm run lint:backend"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paras-codess/orbitIDE.git"
+  },
+  "keywords": [
+    "ide",
+    "coding-platform",
+    "ai",
+    "dsa",
+    "collaborative"
+  ],
+  "author": "paras-codess",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/paras-codess/orbitIDE/issues"
+  },
+  "homepage": "https://github.com/paras-codess/orbitIDE#readme"
+}
