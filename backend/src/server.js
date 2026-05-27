@@ -59,9 +59,9 @@ app.use((err, req, res, next) => {
 // Start Server
 // ------------------------------------
 app.listen(PORT, () => {
-  console.log(`\n🚀 OrbitIDE AI Backend running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}\n`);
+  console.log(`\n OrbitIDE AI Backend running on http://localhost:${PORT}`);
+  // console.log(`Health check: http://localhost:${PORT}/api/health`);
+  // console.log(` Environment: ${process.env.NODE_ENV || "development"}\n`);
 });
 
 export default app;

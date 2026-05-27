@@ -1,6 +1,8 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import prisma from "../config/db.js";
+import crypto from "crypto";
+import { sendVerificationEmail } from "../services/emailService.js";
 
 /**
  * Generates a JWT token for the given user ID.
@@ -27,6 +29,38 @@ export const register = async (req, res) => {
       });
     }
 
+    // Email format syntax validation
+    const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Please enter a valid email address.",
+      });
+    }
+
+    // Username (name) format validation - Developer Style (GitHub-like)
+    const USERNAME_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|[ _-](?=[a-zA-Z0-9])){2,19}$/;
+    if (!USERNAME_REGEX.test(name)) {
+      return res.status(400).json({
+        status: "error",
+        message:
+          "Username must be 3-20 characters, start and end with a letter or number. Spaces, hyphens, and underscores are allowed between words (no consecutive separators).",
+      });
+    }
+
+    // Reserved words check
+    const RESERVED_WORDS = [
+      "admin", "administrator", "root", "support", "moderator", "help", "system",
+      "orbitide", "orbit", "orbit-ide", "staff",
+      "api", "auth", "login", "logout", "settings", "profile", "null", "undefined", "status",
+    ];
+    if (RESERVED_WORDS.includes(name.toLowerCase())) {
+      return res.status(400).json({
+        status: "error",
+        message: "This username is reserved and cannot be used.",
+      });
+    }
+
     if (password.length < 6) {
       return res.status(400).json({
         status: "error",
@@ -34,15 +68,29 @@ export const register = async (req, res) => {
       });
     }
 
-    // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
+    // Check if email already exists
+    const existingEmail = await prisma.user.findUnique({
       where: { email },
     });
 
-    if (existingUser) {
+    if (existingEmail) {
       return res.status(409).json({
         status: "error",
         message: "An account with this email already exists.",
+      });
+    }
+
+    // Check if username (name) already exists (case-insensitive)
+    const existingName = await prisma.user.findFirst({
+      where: {
+        name: { equals: name, mode: "insensitive" },
+      },
+    });
+
+    if (existingName) {
+      return res.status(409).json({
+        status: "error",
+        message: "This username is already taken.",
       });
     }
 
@@ -50,12 +98,23 @@ export const register = async (req, res) => {
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    // Generate secure email verification token
+    const verificationTokenRaw = crypto.randomBytes(32).toString("hex");
+    const verificationTokenHashed = crypto
+      .createHash("sha256")
+      .update(verificationTokenRaw)
+      .digest("hex");
+    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
     // Create user in database
     const user = await prisma.user.create({
       data: {
         name,
         email,
         password: hashedPassword,
+        isVerified: false,
+        verificationToken: verificationTokenHashed,
+        verificationTokenExpires,
       },
       select: {
         id: true,
@@ -66,13 +125,19 @@ export const register = async (req, res) => {
       },
     });
 
-    // Generate JWT
-    const token = generateToken(user.id);
+    // Send verification email
+    await sendVerificationEmail(email, verificationTokenRaw);
 
     res.status(201).json({
       status: "success",
-      message: "Account created successfully.",
-      data: { user, token },
+      message: "Account created successfully. Please check your email to verify your account.",
+      data: {
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+      },
     });
   } catch (error) {
     console.error("Register error:", error);
@@ -118,6 +183,14 @@ export const login = async (req, res) => {
       return res.status(401).json({
         status: "error",
         message: "Invalid email or password.",
+      });
+    }
+
+    // Check if user has verified their email
+    if (!user.isVerified) {
+      return res.status(403).json({
+        status: "error",
+        message: "Please verify your email before logging in.",
       });
     }
 
@@ -203,6 +276,67 @@ export const updateProfile = async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to update profile.",
+    });
+  }
+};
+
+/**
+ * GET /api/auth/verify-email
+ * Verifies the user's email using the cryptographically secure token.
+ */
+export const verifyEmail = async (req, res) => {
+  try {
+    const { token } = req.query;
+
+    if (!token) {
+      return res.status(400).json({
+        status: "error",
+        message: "Verification token is required.",
+      });
+    }
+
+    // Hash the incoming raw token to match what is stored in the DB
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    // Find the user by token and ensure it has not expired
+    const user = await prisma.user.findFirst({
+      where: {
+        verificationToken: hashedToken,
+        verificationTokenExpires: {
+          gt: new Date(),
+        },
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid or expired verification token.",
+      });
+    }
+
+    // Update user to verified and remove the token fields
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        isVerified: true,
+        verificationToken: null,
+        verificationTokenExpires: null,
+      },
+    });
+
+    res.json({
+      status: "success",
+      message: "Email verified successfully! You can now log in.",
+    });
+  } catch (error) {
+    console.error("Verify email error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "An error occurred during verification. Please try again.",
     });
   }
 };
