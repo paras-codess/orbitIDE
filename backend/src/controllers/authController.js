@@ -125,6 +125,7 @@ export const register = async (req, res) => {
       },
     });
 
+
     // Send verification email
     await sendVerificationEmail(email, verificationTokenRaw);
 
@@ -288,6 +289,7 @@ export const verifyEmail = async (req, res) => {
   try {
     const { token } = req.query;
 
+
     if (!token) {
       return res.status(400).json({
         status: "error",
@@ -300,6 +302,7 @@ export const verifyEmail = async (req, res) => {
       .createHash("sha256")
       .update(token)
       .digest("hex");
+
 
     // Find the user by token and ensure it has not expired
     const user = await prisma.user.findFirst({

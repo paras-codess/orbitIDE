@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { authAPI } from "../services/api.js";
 import "./Auth.css";
@@ -9,6 +9,7 @@ function VerifyEmail() {
 
   const [status, setStatus] = useState("verifying"); // verifying | success | error
   const [message, setMessage] = useState("");
+  const hasCalledRef = useRef(false);
 
   useEffect(() => {
     if (!token) {
@@ -16,6 +17,10 @@ function VerifyEmail() {
       setMessage("Verification token is missing. Please check your verification link.");
       return;
     }
+
+    // Prevent double-call from React StrictMode in development
+    if (hasCalledRef.current) return;
+    hasCalledRef.current = true;
 
     const verifyToken = async () => {
       try {
