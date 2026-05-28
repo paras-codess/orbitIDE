@@ -48,4 +48,9 @@ export const authAPI = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
+
+  verifyEmail: (token) =>
+    request(`/auth/verify-email?token=${token}`, {
+      method: "GET",
+    }),
 };

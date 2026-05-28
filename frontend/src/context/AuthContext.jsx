@@ -38,8 +38,7 @@ export function AuthProvider({ children }) {
 
   const register = async (name, email, password) => {
     const res = await authAPI.register(name, email, password);
-    localStorage.setItem("orbitide_token", res.data.token);
-    setUser(res.data.user);
+    // Registration requires email verification, so we do not log in automatically.
     return res;
   };
 
