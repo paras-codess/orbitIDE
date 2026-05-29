@@ -47,6 +47,23 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
+  const googleLogin = async (credential) => {
+    const res = await authAPI.googleLogin(credential);
+    // Always store the token (even temporary for new users)
+    localStorage.setItem("orbitide_token", res.data.token);
+    if (!res.data.needsUsername) {
+      setUser(res.data.user);
+    }
+    return res;
+  };
+
+  const setGoogleUsername = async (name) => {
+    const res = await authAPI.setGoogleUsername(name);
+    localStorage.setItem("orbitide_token", res.data.token);
+    setUser(res.data.user);
+    return res;
+  };
+
   const value = {
     user,
     loading,
@@ -54,6 +71,8 @@ export function AuthProvider({ children }) {
     login,
     register,
     logout,
+    googleLogin,
+    setGoogleUsername,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

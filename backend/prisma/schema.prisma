@@ -17,11 +17,15 @@ model User {
   id        String   @id @default(uuid())
   name      String   @unique
   email     String   @unique
-  password  String
+  password  String?
   avatar    String?
   role      Role     @default(USER)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  // OAuth fields
+  googleId     String?  @unique @map("google_id")
+  authProvider String   @default("local") @map("auth_provider")
 
   // Email verification fields
   isVerified               Boolean   @default(false) @map("is_verified")
