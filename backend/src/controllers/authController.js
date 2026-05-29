@@ -2,7 +2,10 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import prisma from "../config/db.js";
 import crypto from "crypto";
+import { OAuth2Client } from "google-auth-library";
 import { sendVerificationEmail } from "../services/emailService.js";
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 /**
  * Generates a JWT token for the given user ID.
@@ -177,6 +180,14 @@ export const login = async (req, res) => {
       });
     }
 
+    // Block password login for Google-only accounts
+    if (user.authProvider === "google" && !user.password) {
+      return res.status(401).json({
+        status: "error",
+        message: "This account uses Google Sign-In. Please log in with Google.",
+      });
+    }
+
     // Compare password with hashed password
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
@@ -340,6 +351,224 @@ export const verifyEmail = async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "An error occurred during verification. Please try again.",
+    });
+  }
+};
+
+/**
+ * POST /api/auth/google
+ * Authenticates a user using a Google ID token (credential).
+ * If the user is new and has no username, returns needsUsername: true
+ * along with a temporary token so the client can set a username.
+ */
+export const googleLogin = async (req, res) => {
+  try {
+    const { credential } = req.body;
+
+    if (!credential) {
+      return res.status(400).json({
+        status: "error",
+        message: "Google credential is required.",
+      });
+    }
+
+    // Verify the Google ID token
+    let ticket;
+    try {
+      ticket = await googleClient.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+    } catch (err) {
+      return res.status(401).json({
+        status: "error",
+        message: "Invalid Google token.",
+      });
+    }
+
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name, picture } = payload;
+
+    // 1. Check if user already exists by googleId
+    let user = await prisma.user.findUnique({
+      where: { googleId },
+    });
+
+    if (user) {
+      // Existing Google user — log them in
+      const token = generateToken(user.id);
+      return res.json({
+        status: "success",
+        message: "Login successful.",
+        data: {
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            avatar: user.avatar,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          token,
+        },
+      });
+    }
+
+    // 2. Check if a user with this email already exists (registered via email/password)
+    user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (user) {
+      // Link the Google account to the existing user
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          googleId,
+          avatar: user.avatar || picture,
+          isVerified: true, // Google email is verified
+        },
+      });
+
+      const token = generateToken(user.id);
+      return res.json({
+        status: "success",
+        message: "Google account linked and login successful.",
+        data: {
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            avatar: user.avatar,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          token,
+        },
+      });
+    }
+
+    // 3. New user — create account but they need to choose a username
+    //    Create with a temporary placeholder name that will be updated
+    const tempName = `google_${googleId.slice(0, 8)}_${Date.now()}`;
+    user = await prisma.user.create({
+      data: {
+        name: tempName,
+        email,
+        googleId,
+        avatar: picture || null,
+        authProvider: "google",
+        isVerified: true,
+      },
+    });
+
+    // Return a temporary token so the client can call set-username
+    const tempToken = generateToken(user.id);
+    return res.json({
+      status: "success",
+      message: "Google sign-in successful. Please choose a username.",
+      data: {
+        needsUsername: true,
+        token: tempToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          avatar: user.avatar,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Google login error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Google authentication failed. Please try again.",
+    });
+  }
+};
+
+/**
+ * POST /api/auth/google/set-username
+ * Sets the username for a newly created Google user.
+ * Requires: authenticate middleware (temp token from googleLogin)
+ */
+export const setGoogleUsername = async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({
+        status: "error",
+        message: "Username is required.",
+      });
+    }
+
+    // Username format validation
+    const USERNAME_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|[ _-](?=[a-zA-Z0-9])){2,19}$/;
+    if (!USERNAME_REGEX.test(name)) {
+      return res.status(400).json({
+        status: "error",
+        message:
+          "Username must be 3-20 characters, start and end with a letter or number. Spaces, hyphens, and underscores are allowed between words.",
+      });
+    }
+
+    // Reserved words check
+    const RESERVED_WORDS = [
+      "admin", "administrator", "root", "support", "moderator", "help", "system",
+      "orbitide", "orbit", "orbit-ide", "staff",
+      "api", "auth", "login", "logout", "settings", "profile", "null", "undefined", "status",
+    ];
+    if (RESERVED_WORDS.includes(name.toLowerCase())) {
+      return res.status(400).json({
+        status: "error",
+        message: "This username is reserved and cannot be used.",
+      });
+    }
+
+    // Check if username is already taken
+    const existingName = await prisma.user.findFirst({
+      where: {
+        name: { equals: name, mode: "insensitive" },
+        id: { not: req.user.id },
+      },
+    });
+
+    if (existingName) {
+      return res.status(409).json({
+        status: "error",
+        message: "This username is already taken.",
+      });
+    }
+
+    // Update the user's name
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { name },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        avatar: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+
+    const token = generateToken(updatedUser.id);
+
+    res.json({
+      status: "success",
+      message: "Username set successfully.",
+      data: {
+        user: updatedUser,
+        token,
+      },
+    });
+  } catch (error) {
+    console.error("Set Google username error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to set username. Please try again.",
     });
   }
 };

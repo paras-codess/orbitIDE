@@ -53,4 +53,16 @@ export const authAPI = {
     request(`/auth/verify-email?token=${token}`, {
       method: "GET",
     }),
+
+  googleLogin: (credential) =>
+    request("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ credential }),
+    }),
+
+  setGoogleUsername: (name) =>
+    request("/auth/google/set-username", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
 };
