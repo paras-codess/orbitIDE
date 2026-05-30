@@ -13,8 +13,10 @@ function VerifyEmail() {
 
   useEffect(() => {
     if (!token) {
-      setStatus("error");
-      setMessage("Verification token is missing. Please check your verification link.");
+      Promise.resolve().then(() => {
+        setStatus("error");
+        setMessage("Verification token is missing. Please check your verification link.");
+      });
       return;
     }
 

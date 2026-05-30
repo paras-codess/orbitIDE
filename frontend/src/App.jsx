@@ -5,6 +5,7 @@ import Login from "./pages/Login.jsx";
 import Register from "./pages/Register.jsx";
 import VerifyEmail from "./pages/VerifyEmail.jsx";
 import ChooseUsername from "./pages/ChooseUsername.jsx";
+import Problems from "./pages/Problems.jsx";
 
 function App() {
   return (
@@ -17,8 +18,8 @@ function App() {
           <Route path="/register" element={<Register />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/choose-username" element={<ChooseUsername />} />
+          <Route path="/problems" element={<Problems />} />
           {/* Future routes will be added here in later phases */}
-          {/* <Route path="/problems" element={<Problems />} /> */}
           {/* <Route path="/ide" element={<IDE />} /> */}
           {/* <Route path="/contests" element={<Contests />} /> */}
           {/* <Route path="/visualizer" element={<Visualizer />} /> */}

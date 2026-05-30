@@ -380,6 +380,7 @@ export const googleLogin = async (req, res) => {
         audience: process.env.GOOGLE_CLIENT_ID,
       });
     } catch (err) {
+      console.error("Google verification token error:", err);
       return res.status(401).json({
         status: "error",
         message: "Invalid Google token.",
@@ -387,7 +388,7 @@ export const googleLogin = async (req, res) => {
     }
 
     const payload = ticket.getPayload();
-    const { sub: googleId, email, name, picture } = payload;
+    const { sub: googleId, email, picture } = payload;
 
     // 1. Check if user already exists by googleId
     let user = await prisma.user.findUnique({

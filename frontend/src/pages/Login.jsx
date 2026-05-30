@@ -79,6 +79,7 @@ function Login() {
         }
       });
     } catch (err) {
+      console.error("Google login initialization failed:", err);
       setError("Failed to initialize Google Sign-In.");
       setGoogleLoading(false);
     }

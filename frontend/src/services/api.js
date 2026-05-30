@@ -66,3 +66,24 @@ export const authAPI = {
       body: JSON.stringify({ name }),
     }),
 };
+
+/**
+ * Problems API functions
+ */
+export const problemsAPI = {
+  getProblems: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.page) query.append("page", params.page);
+    if (params.limit) query.append("limit", params.limit);
+    if (params.difficulty) query.append("difficulty", params.difficulty);
+    if (params.topic) query.append("topic", params.topic);
+    if (params.search) query.append("search", params.search);
+    
+    const queryString = query.toString();
+    return request(`/problems${queryString ? `?${queryString}` : ""}`);
+  },
+
+  getTopics: () => request("/problems/topics"),
+
+  getProblemById: (id) => request(`/problems/${id}`),
+};
