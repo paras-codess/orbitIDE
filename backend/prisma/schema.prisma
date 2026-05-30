@@ -33,8 +33,10 @@ model User {
   verificationTokenExpires DateTime? @map("verification_token_expires")
 
   // Relations
-  submissions    Submission[]
-  userTopicStats UserTopicStat[]
+  submissions         Submission[]
+  userTopicStats      UserTopicStat[]
+  contests            Contest[]
+  contestParticipants ContestParticipant[]
 
   @@map("users")
 }
@@ -64,8 +66,9 @@ model Problem {
   updatedAt   DateTime   @updatedAt @map("updated_at")
 
   // Relations
-  submissions Submission[]
-  testCases   TestCase[]
+  submissions     Submission[]
+  testCases       TestCase[]
+  contestProblems ContestProblem[]
 
   @@map("problems")
 }
@@ -86,10 +89,10 @@ model TestCase {
   output    String  @db.Text
   isHidden  Boolean @default(true) @map("is_hidden")
 
-  // Relations
   problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
 
   @@map("test_cases")
+  @@index([problemId])
 }
 
 // ==========================================
@@ -111,6 +114,8 @@ model Submission {
   problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
 
   @@map("submissions")
+  @@index([userId])
+  @@index([problemId])
 }
 
 enum Verdict {
@@ -140,4 +145,63 @@ model UserTopicStat {
 
   @@unique([userId, topic])
   @@map("user_topic_stats")
+  @@index([userId])
+}
+
+// ==========================================
+// CONTEST MODEL
+// ==========================================
+model Contest {
+  id          String   @id @default(uuid())
+  title       String
+  description String?  @db.Text
+  startTime   DateTime @map("start_time")
+  endTime     DateTime @map("end_time")
+  createdBy   String   @map("created_by")
+  isPublic    Boolean  @default(true) @map("is_public")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  creator      User                 @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  problems     ContestProblem[]
+  participants ContestParticipant[]
+
+  @@map("contests")
+  @@index([createdBy])
+}
+
+// ==========================================
+// CONTEST PROBLEM MODEL
+// ==========================================
+model ContestProblem {
+  id        String @id @default(uuid())
+  contestId String @map("contest_id")
+  problemId String @map("problem_id")
+  order     Int    @default(0)
+  points    Int    @default(100)
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, problemId])
+  @@map("contest_problems")
+  @@index([problemId])
+}
+
+// ==========================================
+// CONTEST PARTICIPANT MODEL
+// ==========================================
+model ContestParticipant {
+  id        String   @id @default(uuid())
+  contestId String   @map("contest_id")
+  userId    String   @map("user_id")
+  score     Int      @default(0)
+  penalty   Int      @default(0)
+  joinedAt  DateTime @default(now()) @map("joined_at")
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, userId])
+  @@map("contest_participants")
+  @@index([userId])
 }

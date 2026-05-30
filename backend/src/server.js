@@ -3,6 +3,10 @@ import cors from "cors";
 import dotenv from "dotenv";
 import prisma from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
+import problemRoutes from "./routes/problemRoutes.js";
+import submissionRoutes from "./routes/submissionRoutes.js";
+import { generalLimiter, authLimiter } from "./middleware/rateLimiter.js";
+import { startSubmissionWorker } from "./services/submissionWorker.js";
 
 // Load environment variables
 dotenv.config();
@@ -15,6 +19,7 @@ const PORT = process.env.PORT || 5000;
 // ------------------------------------
 app.use(cors());
 app.use(express.json());
+app.use("/api", generalLimiter);
 
 // ------------------------------------
 // Health Check Route
@@ -39,9 +44,9 @@ app.get("/api/health", async (req, res) => {
 // ------------------------------------
 // API Routes
 // ------------------------------------
-app.use("/api/auth", authRoutes);
-// app.use("/api/problems", problemRoutes); // Phase 3
-// app.use("/api/submissions", submissionRoutes); // Phase 3
+app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/problems", problemRoutes);
+app.use("/api/submissions", submissionRoutes);
 // app.use("/api/contests", contestRoutes); // Phase 8
 
 // ------------------------------------
@@ -60,8 +65,10 @@ app.use((err, req, res, next) => {
 // ------------------------------------
 app.listen(PORT, () => {
   console.log(`\n OrbitIDE AI Backend running on http://localhost:${PORT}`);
-  // console.log(`Health check: http://localhost:${PORT}/api/health`);
-  // console.log(` Environment: ${process.env.NODE_ENV || "development"}\n`);
+
+  // Start the BullMQ submission worker
+  startSubmissionWorker();
+  console.log(`📋 Submission queue worker initialized`);
 });
 
 export default app;

@@ -25,7 +25,7 @@ export function AuthProvider({ children }) {
         })
         .finally(() => setLoading(false));
     } else {
-      setLoading(false);
+      Promise.resolve().then(() => setLoading(false));
     }
   }, []);
 
@@ -82,6 +82,7 @@ export function AuthProvider({ children }) {
  * Custom hook to access auth context from any component.
  * Usage: const { user, login, logout } = useAuth();
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {

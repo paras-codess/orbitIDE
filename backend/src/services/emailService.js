@@ -68,6 +68,6 @@ export const sendVerificationEmail = async (toEmail, token) => {
     if (process.env.NODE_ENV === "development") {
       console.log(`\n[DEV BACKUP] Verification Link: ${verificationLink}\n`);
     }
-    throw new Error("Could not send verification email. Please try again later.");
+    throw new Error("Could not send verification email. Please try again later.", { cause: error });
   }
 };

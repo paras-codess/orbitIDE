@@ -91,6 +91,7 @@ function Register() {
         }
       });
     } catch (err) {
+      console.error("Google registration initialization failed:", err);
       setError("Failed to initialize Google Sign-In.");
       setGoogleLoading(false);
     }
