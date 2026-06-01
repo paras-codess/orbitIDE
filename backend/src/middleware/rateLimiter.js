@@ -13,6 +13,9 @@ const createLimiter = (options) => {
     store = new RedisStore({
       // Use sendCommand for ioredis integration
       sendCommand: (...args) => {
+        if (redis.status !== "ready") {
+          throw new Error("Redis is not connected");
+        }
         return redis.call(...args);
       },
       prefix: `rl:orbitide:${process.env.USERNAME || "default"}:`,
@@ -23,6 +26,7 @@ const createLimiter = (options) => {
 
   return rateLimit({
     store,
+    passOnStoreError: true, // Fail gracefully and let requests through if Redis disconnects
     windowMs: options.windowMs || 15 * 60 * 1000,
     max: options.max || 100,
     standardHeaders: true,
