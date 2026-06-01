@@ -87,3 +87,22 @@ export const problemsAPI = {
 
   getProblemById: (id) => request(`/problems/${id}`),
 };
+
+/**
+ * Submissions API functions
+ */
+export const submissionsAPI = {
+  submitCode: (problemId, language, code) =>
+    request("/submissions/submit", {
+      method: "POST",
+      body: JSON.stringify({ problemId, language, code }),
+    }),
+
+  getSubmissionStatus: (id) => request(`/submissions/${id}/status`),
+
+  getMySubmissions: (problemId, page = 1, limit = 20) => {
+    const query = new URLSearchParams({ page, limit });
+    if (problemId) query.append("problemId", problemId);
+    return request(`/submissions/my?${query.toString()}`);
+  },
+};

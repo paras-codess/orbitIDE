@@ -13,6 +13,9 @@ const createLimiter = (options) => {
     store = new RedisStore({
       // Use sendCommand for ioredis integration
       sendCommand: (...args) => {
+        if (redis.status !== "ready") {
+          throw new Error("Redis is not connected");
+        }
         return redis.call(...args);
       },
       prefix: `rl:orbitide:${process.env.USERNAME || "default"}:`,
@@ -23,6 +26,7 @@ const createLimiter = (options) => {
 
   return rateLimit({
     store,
+    passOnStoreError: true, // Fail gracefully and let requests through if Redis disconnects
     windowMs: options.windowMs || 15 * 60 * 1000,
     max: options.max || 100,
     standardHeaders: true,
@@ -43,7 +47,7 @@ export const generalLimiter = createLimiter({
 
 export const authLimiter = createLimiter({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // 15 attempts per 15 minutes
+  max: 50, // 50 attempts per 15 minutes
   message: "Too many login/registration attempts. Please try again after 15 minutes.",
 });
 

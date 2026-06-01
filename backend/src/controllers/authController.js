@@ -129,8 +129,13 @@ export const register = async (req, res) => {
     });
 
 
-    // Send verification email
-    await sendVerificationEmail(email, verificationTokenRaw);
+    // Send verification email (don't let email failure block registration)
+    try {
+      await sendVerificationEmail(email, verificationTokenRaw);
+    } catch (emailError) {
+      console.error("Failed to send verification email (user was created):", emailError.message);
+      // User is created but email failed — still return success so user isn't stuck
+    }
 
     res.status(201).json({
       status: "success",
