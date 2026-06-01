@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import prisma from "../config/db.js";
 import dotenv from "dotenv";
+import { emitSubmissionVerdict } from "../config/socket.js";
 
 dotenv.config();
 
@@ -160,6 +161,14 @@ const processSubmission = async (job) => {
     });
 
     console.log(`✅ Submission ${submissionId} → ${finalVerdict} (${maxExecutionTime}ms, ${maxMemoryUsage}KB)`);
+
+    // Emit live WebSocket verdict notification to user
+    emitSubmissionVerdict(userId, {
+      submissionId,
+      verdict: finalVerdict,
+      executionTime: maxExecutionTime,
+      memoryUsage: maxMemoryUsage,
+    });
 
     // 5. Update UserTopicStat if the problem has a topic
     const problem = await prisma.problem.findUnique({

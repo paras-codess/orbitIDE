@@ -1,18 +1,24 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import http from "http";
 import prisma from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import problemRoutes from "./routes/problemRoutes.js";
 import submissionRoutes from "./routes/submissionRoutes.js";
 import { generalLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import { startSubmissionWorker } from "./services/submissionWorker.js";
+import { initSocket } from "./config/socket.js";
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
+const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 5000;
+
+// Initialize WebSocket Server
+initSocket(httpServer);
 
 // ------------------------------------
 // Middleware
@@ -63,7 +69,7 @@ app.use((err, req, res, next) => {
 // ------------------------------------
 // Start Server
 // ------------------------------------
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`\n OrbitIDE AI Backend running on http://localhost:${PORT}`);
 
   // Start the BullMQ submission worker

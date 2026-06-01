@@ -43,7 +43,7 @@ export const generalLimiter = createLimiter({
 
 export const authLimiter = createLimiter({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // 15 attempts per 15 minutes
+  max: 50, // 50 attempts per 15 minutes
   message: "Too many login/registration attempts. Please try again after 15 minutes.",
 });
 
