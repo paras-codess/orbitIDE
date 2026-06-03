@@ -2,6 +2,7 @@ import { Router } from "express";
 import { authenticate } from "../middleware/auth.js";
 import { submissionLimiter } from "../middleware/rateLimiter.js";
 import {
+  runCode,
   submitCode,
   getSubmissionStatus,
   getMySubmissions,
@@ -11,6 +12,9 @@ const router = Router();
 
 // All submission routes require authentication
 router.use(authenticate);
+
+// POST /api/submissions/run — Run code against sample tests (synchronous, rate limited: 5/min)
+router.post("/run", submissionLimiter, runCode);
 
 // POST /api/submissions/submit — Submit code (rate limited: 5/min)
 router.post("/submit", submissionLimiter, submitCode);

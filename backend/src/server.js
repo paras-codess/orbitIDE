@@ -23,7 +23,10 @@ initSocket(httpServer);
 // ------------------------------------
 // Middleware
 // ------------------------------------
-app.use(cors());
+app.use(cors({
+  origin: true, // Reflect request origin — allows any origin during dev
+  credentials: true,
+}));
 app.use(express.json());
 app.use("/api", generalLimiter);
 

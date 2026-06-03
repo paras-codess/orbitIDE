@@ -12,10 +12,8 @@ const createLimiter = (options) => {
   try {
     store = new RedisStore({
       // Use sendCommand for ioredis integration
+      // Lazy check: attempt the call and let passOnStoreError handle failures
       sendCommand: (...args) => {
-        if (redis.status !== "ready") {
-          throw new Error("Redis is not connected");
-        }
         return redis.call(...args);
       },
       prefix: `rl:orbitide:${process.env.USERNAME || "default"}:`,
@@ -24,6 +22,8 @@ const createLimiter = (options) => {
     console.warn("⚠️ Rate Limiter falling back to MemoryStore due to Redis initialization issue:", error.message);
   }
 
+  const rateLimitMessage = options.message || "Too many requests, please try again later.";
+
   return rateLimit({
     store,
     passOnStoreError: true, // Fail gracefully and let requests through if Redis disconnects
@@ -31,9 +31,16 @@ const createLimiter = (options) => {
     max: options.max || 100,
     standardHeaders: true,
     legacyHeaders: false,
+    // Use a handler to guarantee JSON responses
+    handler: (req, res) => {
+      res.status(429).json({
+        status: "error",
+        message: rateLimitMessage,
+      });
+    },
     message: {
       status: "error",
-      message: options.message || "Too many requests, please try again later.",
+      message: rateLimitMessage,
     },
     ...options,
   });
@@ -53,6 +60,6 @@ export const authLimiter = createLimiter({
 
 export const submissionLimiter = createLimiter({
   windowMs: 60 * 1000, // 1 minute
-  max: 5, // 5 requests per minute
+  max: 30, // 30 requests per minute (generous for dev; tighten in production)
   message: "Submission rate limit exceeded. Please wait 1 minute before trying again.",
 });

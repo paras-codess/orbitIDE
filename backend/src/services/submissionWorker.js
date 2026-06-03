@@ -6,54 +6,20 @@ import { emitSubmissionVerdict } from "../config/socket.js";
 dotenv.config();
 
 // ------------------------------------
-// Judge0 API Configuration
+// Wandbox API Configuration (FREE — No API key needed!)
+// https://wandbox.org
 // ------------------------------------
-const JUDGE0_API_URL = process.env.JUDGE0_API_URL || "https://judge0-ce.p.rapidapi.com";
-const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY || "";
+const WANDBOX_API_URL = process.env.WANDBOX_API_URL || "https://wandbox.org/api";
 
 // ------------------------------------
-// Language → Judge0 language_id mapping
-// See: https://ce.judge0.com/languages
+// Language → Wandbox compiler mapping
 // ------------------------------------
-const LANGUAGE_MAP = {
-  c: 50,          // C (GCC 9.2.0)
-  cpp: 54,        // C++ (GCC 9.2.0)
-  java: 62,       // Java (OpenJDK 13.0.1)
-  python: 71,     // Python (3.8.1)
-  javascript: 63, // JavaScript (Node.js 12.14.0)
-};
-
-// ------------------------------------
-// Judge0 Verdict Status IDs
-// ------------------------------------
-const JUDGE0_STATUS = {
-  IN_QUEUE: 1,
-  PROCESSING: 2,
-  ACCEPTED: 3,
-  WRONG_ANSWER: 4,
-  TIME_LIMIT_EXCEEDED: 5,
-  COMPILATION_ERROR: 6,
-  RUNTIME_ERROR_SIGSEGV: 7,
-  RUNTIME_ERROR_SIGXFSZ: 8,
-  RUNTIME_ERROR_SIGFPE: 9,
-  RUNTIME_ERROR_SIGABRT: 10,
-  RUNTIME_ERROR_NZEC: 11,
-  RUNTIME_ERROR_OTHER: 12,
-  INTERNAL_ERROR: 13,
-  EXEC_FORMAT_ERROR: 14,
-};
-
-/**
- * Map Judge0 status_id to Prisma Verdict enum.
- */
-const mapJudge0Verdict = (statusId) => {
-  if (statusId === JUDGE0_STATUS.ACCEPTED) return "ACCEPTED";
-  if (statusId === JUDGE0_STATUS.WRONG_ANSWER) return "WRONG_ANSWER";
-  if (statusId === JUDGE0_STATUS.TIME_LIMIT_EXCEEDED) return "TIME_LIMIT_EXCEEDED";
-  if (statusId === JUDGE0_STATUS.COMPILATION_ERROR) return "COMPILATION_ERROR";
-  if (statusId >= 7 && statusId <= 12) return "RUNTIME_ERROR";
-  // Default to RUNTIME_ERROR for anything unexpected
-  return "RUNTIME_ERROR";
+const COMPILER_MAP = {
+  c: "gcc-head-c",
+  cpp: "gcc-head",
+  java: "openjdk-head",
+  python: "cpython-head",
+  javascript: "nodejs-head",
 };
 
 // ------------------------------------
@@ -72,35 +38,54 @@ const connection = {
 };
 
 // ------------------------------------
-// Submit code to Judge0 and wait for result
+// Execute code on Wandbox API
+// Returns { stdout, stderr, exitCode, isCompileError, compileError }
 // ------------------------------------
-const submitToJudge0 = async (code, languageId, stdin, expectedOutput) => {
-  const headers = {
-    "Content-Type": "application/json",
-    "X-RapidAPI-Host": new URL(JUDGE0_API_URL).hostname,
-    "X-RapidAPI-Key": JUDGE0_API_KEY,
-  };
+export const executeOnWandbox = async (code, language, stdin) => {
+  const compiler = COMPILER_MAP[language.toLowerCase()];
+  if (!compiler) {
+    throw new Error(`Unsupported language: ${language}`);
+  }
 
-  // Create a submission (synchronous mode — wait=true)
-  const createResponse = await fetch(`${JUDGE0_API_URL}/submissions?base64_encoded=false&wait=true`, {
+  const response = await fetch(`${WANDBOX_API_URL}/compile.json`, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      source_code: code,
-      language_id: languageId,
+      code,
+      compiler,
       stdin: stdin || "",
-      expected_output: expectedOutput || "",
-      cpu_time_limit: 5,    // 5 seconds
-      memory_limit: 256000, // 256 MB
+      "runtime-option-raw": "",
     }),
   });
 
-  if (!createResponse.ok) {
-    const errorText = await createResponse.text();
-    throw new Error(`Judge0 API error (${createResponse.status}): ${errorText}`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Wandbox API error (${response.status}): ${errorText}`);
   }
 
-  return createResponse.json();
+  const result = await response.json();
+
+  // Check for compilation errors
+  if (result.compiler_error && result.compiler_error.trim() !== "") {
+    return {
+      stdout: "",
+      stderr: result.compiler_error,
+      exitCode: parseInt(result.status, 10) || 1,
+      isCompileError: true,
+    };
+  }
+
+  // Check for runtime signal (SIGKILL = TLE, SIGSEGV = segfault, etc.)
+  const signal = result.signal || "";
+  const status = parseInt(result.status, 10) || 0;
+
+  return {
+    stdout: result.program_output || "",
+    stderr: result.program_error || "",
+    exitCode: status,
+    signal,
+    isCompileError: false,
+  };
 };
 
 // ------------------------------------
@@ -112,9 +97,8 @@ const processSubmission = async (job) => {
   console.log(`⚙️  Processing submission ${submissionId} [${language}]`);
 
   try {
-    // 1. Get language ID
-    const languageId = LANGUAGE_MAP[language.toLowerCase()];
-    if (!languageId) {
+    // 1. Validate language
+    if (!COMPILER_MAP[language.toLowerCase()]) {
       throw new Error(`Unsupported language: ${language}`);
     }
 
@@ -132,22 +116,90 @@ const processSubmission = async (job) => {
     let finalVerdict = "ACCEPTED";
     let maxExecutionTime = 0;
     let maxMemoryUsage = 0;
+    let failedTestIndex = null; // 1-based index of first failure
+    const testResults = [];
 
-    for (const testCase of testCases) {
-      const result = await submitToJudge0(code, languageId, testCase.input, testCase.output);
+    console.log(`📋 Running ${testCases.length} test cases on Wandbox...`);
 
-      // Track resource usage
-      const time = result.time ? Math.round(parseFloat(result.time) * 1000) : 0; // convert to ms
-      const memory = result.memory || 0; // KB
-      maxExecutionTime = Math.max(maxExecutionTime, time);
-      maxMemoryUsage = Math.max(maxMemoryUsage, memory);
+    for (let i = 0; i < testCases.length; i++) {
+      const testCase = testCases[i];
+      const startTime = Date.now();
 
-      // If any test case fails, set verdict and stop
-      if (result.status.id !== JUDGE0_STATUS.ACCEPTED) {
-        finalVerdict = mapJudge0Verdict(result.status.id);
-        console.log(`❌ Test case failed: ${result.status.description}`);
+      const result = await executeOnWandbox(code, language, testCase.input);
+
+      const executionTime = Date.now() - startTime;
+      maxExecutionTime = Math.max(maxExecutionTime, executionTime);
+
+      // Build per-test result object (respecting isHidden flag)
+      const testResult = {
+        testNumber: i + 1,
+        passed: false,
+        verdict: "PASSED",
+        executionTime,
+        isHidden: testCase.isHidden,
+      };
+
+      // Check for compilation error
+      if (result.isCompileError) {
+        finalVerdict = "COMPILATION_ERROR";
+        failedTestIndex = i + 1;
+        testResult.verdict = "COMPILATION_ERROR";
+        testResult.errorMessage = result.stderr ? result.stderr.substring(0, 500) : undefined;
+        testResults.push(testResult);
+        console.log(`❌ Compilation Error: ${result.stderr.substring(0, 200)}`);
         break;
       }
+
+      // Check for signal-based errors (TLE, segfault)
+      if (result.signal) {
+        if (result.signal === "SIGKILL" || result.signal === "SIGXCPU") {
+          finalVerdict = "TIME_LIMIT_EXCEEDED";
+          testResult.verdict = "TIME_LIMIT_EXCEEDED";
+        } else {
+          finalVerdict = "RUNTIME_ERROR";
+          testResult.verdict = "RUNTIME_ERROR";
+        }
+        failedTestIndex = i + 1;
+        testResult.errorMessage = result.stderr ? result.stderr.substring(0, 500) : undefined;
+        testResults.push(testResult);
+        console.log(`❌ Test ${i + 1}: ${finalVerdict} (signal: ${result.signal})`);
+        break;
+      }
+
+      // Check for runtime error (non-zero exit code)
+      if (result.exitCode !== 0) {
+        finalVerdict = "RUNTIME_ERROR";
+        failedTestIndex = i + 1;
+        testResult.verdict = "RUNTIME_ERROR";
+        testResult.errorMessage = result.stderr ? result.stderr.substring(0, 500) : undefined;
+        testResults.push(testResult);
+        console.log(`❌ Test ${i + 1}: Runtime Error (exit code: ${result.exitCode})`);
+        break;
+      }
+
+      // Compare output (trim trailing whitespace/newlines)
+      const actualOutput = result.stdout.trim();
+      const expectedOutput = (testCase.output || "").trim();
+
+      if (actualOutput !== expectedOutput) {
+        finalVerdict = "WRONG_ANSWER";
+        failedTestIndex = i + 1;
+        testResult.verdict = "WRONG_ANSWER";
+        // Only expose input/output for non-hidden test cases
+        if (!testCase.isHidden) {
+          testResult.input = testCase.input;
+          testResult.expectedOutput = expectedOutput;
+          testResult.actualOutput = actualOutput;
+        }
+        testResults.push(testResult);
+        console.log(`❌ Test ${i + 1}: Wrong Answer (expected "${expectedOutput.substring(0, 50)}", got "${actualOutput.substring(0, 50)}")`);
+        break;
+      }
+
+      // Test passed
+      testResult.passed = true;
+      testResults.push(testResult);
+      console.log(`  ✓ Test ${i + 1}/${testCases.length} passed (${executionTime}ms)`);
     }
 
     // 4. Update the Submission record in DB
@@ -160,17 +212,20 @@ const processSubmission = async (job) => {
       },
     });
 
-    console.log(`✅ Submission ${submissionId} → ${finalVerdict} (${maxExecutionTime}ms, ${maxMemoryUsage}KB)`);
+    console.log(`✅ Submission ${submissionId} → ${finalVerdict} (${maxExecutionTime}ms)`);
 
-    // Emit live WebSocket verdict notification to user
+    // 5. Emit live WebSocket verdict notification to user
     emitSubmissionVerdict(userId, {
       submissionId,
       verdict: finalVerdict,
       executionTime: maxExecutionTime,
       memoryUsage: maxMemoryUsage,
+      failedTestCase: failedTestIndex,
+      totalTests: testCases.length,
+      testResults,
     });
 
-    // 5. Update UserTopicStat if the problem has a topic
+    // 6. Update UserTopicStat if the problem has a topic
     const problem = await prisma.problem.findUnique({
       where: { id: problemId },
       select: { topic: true },
@@ -247,7 +302,7 @@ export const startSubmissionWorker = () => {
     concurrency: 3, // process up to 3 submissions in parallel
     limiter: {
       max: 10,
-      duration: 60000, // max 10 jobs per minute (respects Judge0 rate limits)
+      duration: 60000, // max 10 jobs per minute
     },
   });
 
@@ -263,6 +318,6 @@ export const startSubmissionWorker = () => {
     console.error("❌ Submission Worker error:", err.message);
   });
 
-  console.log("🚀 Submission Worker started (concurrency: 3)");
+  console.log("🚀 Submission Worker started (engine: Wandbox API, concurrency: 3)");
   return worker;
 };
