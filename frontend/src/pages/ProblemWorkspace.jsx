@@ -827,6 +827,48 @@ function ProblemWorkspace() {
                       {renderProfilerGraph()}
                     </div>
                   </div>
+
+                  {/* Complexity Summary — Time & Space */}
+                  {profileData.length >= 3 && (
+                    <div className="complexity-summary-section">
+                      <h4 className="complexity-summary-title">📊 Complexity Analysis</h4>
+                      <div className="complexity-cards-row">
+                        {/* Time Complexity Card */}
+                        {(() => {
+                          const fit = estimateTimeComplexity(profileData);
+                          return fit ? (
+                            <div className="complexity-card time-card">
+                              <div className="complexity-card-icon">⏱️</div>
+                              <div className="complexity-card-body">
+                                <span className="complexity-card-label">Time Complexity</span>
+                                <span className="complexity-card-value">{fit.label}</span>
+                                <div className="complexity-confidence">
+                                  <span className="confidence-label">Confidence</span>
+                                  <div className="confidence-bar-track">
+                                    <div
+                                      className="confidence-bar-fill"
+                                      style={{ width: `${Math.max(0, Math.min(100, fit.score * 100)).toFixed(0)}%` }}
+                                    />
+                                  </div>
+                                  <span className="confidence-pct">{(fit.score * 100).toFixed(0)}%</span>
+                                </div>
+                              </div>
+                            </div>
+                          ) : null;
+                        })()}
+
+                        {/* Space Complexity Card */}
+                        <div className="complexity-card space-card">
+                          <div className="complexity-card-icon">💾</div>
+                          <div className="complexity-card-body">
+                            <span className="complexity-card-label">Space Complexity</span>
+                            <span className="complexity-card-value">{estimateSpaceComplexity(code)}</span>
+                            <span className="complexity-card-hint">Estimated from code patterns</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
