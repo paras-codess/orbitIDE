@@ -28,11 +28,16 @@ function ProblemWorkspace() {
   const [editorTheme, setEditorTheme] = useState("vs-dark");
   
   // Execution/Submission State
-  const [evaluating, setEvaluating] = useState(false);
+  const [evaluating, setEvaluating] = useState(false); // "Submit" in progress
+  const [running, setRunning] = useState(false);        // "Run Code" in progress
   const [verdict, setVerdict] = useState(null);
   const [metrics, setMetrics] = useState(null);
-  const [activeTab, setActiveTab] = useState("console"); // "console" | "profiler" | "submissions"
-  const [consoleLogs, setConsoleLogs] = useState([]);
+
+  // LeetCode-style bottom panel state
+  const [bottomTab, setBottomTab] = useState("testcase"); // "testcase" | "result" | "profiler"
+  const [testCaseInputs, setTestCaseInputs] = useState([]); // editable sample inputs
+  const [testResults, setTestResults] = useState([]);        // per-case results array
+  const [activeCase, setActiveCase] = useState(0);           // which Case tab is selected (0-indexed)
   
   // Profiler State
   const [profileData, setProfileData] = useState([]);
@@ -63,6 +68,17 @@ function ProblemWorkspace() {
           setCode(LANGUAGE_BOILERPLATES[language]);
           setError(null);
           setLoading(false);
+          
+          // Initialize editable test case inputs from sample test cases
+          if (res.data.testCases && res.data.testCases.length > 0) {
+            setTestCaseInputs(
+              res.data.testCases.map((tc) => ({
+                input: tc.input || "",
+                expectedOutput: tc.output || "",
+                isCustom: false,
+              }))
+            );
+          }
         }
       })
       .catch((err) => {
@@ -84,20 +100,16 @@ function ProblemWorkspace() {
 
     // Connect to WebSocket Server
     const backendUrl = "http://localhost:5000";
-    const socket = io(backendUrl, {
-      withCredentials: true,
-    });
+    const socket = io(backendUrl);
     socketRef.current = socket;
 
     socket.on("connect", () => {
-      // console.log("🔌 Connected to socket server");
       // Join user specific private room to catch targeted submission updates
       socket.emit("join-user-room", user.id);
     });
 
     // Listen for live verdict update broadcasts
     socket.on("submission-verdict", (data) => {
-      // Check if update relates to the current active submission
       setEvaluating(false);
       setVerdict(data.verdict);
       setMetrics({
@@ -105,11 +117,15 @@ function ProblemWorkspace() {
         memory: data.memoryUsage
       });
       
-      const newLog = {
-        type: data.verdict === "ACCEPTED" ? "success" : "error",
-        message: `Submission Evaluation Complete. Verdict: ${data.verdict} (${data.executionTime}ms, ${data.memoryUsage} KB)`
-      };
-      setConsoleLogs((prev) => [newLog, ...prev]);
+      // Populate test results for the result tab
+      if (data.testResults && data.testResults.length > 0) {
+        setTestResults(data.testResults);
+        // Auto-select first failed test case, or first one
+        const firstFailed = data.testResults.findIndex((tr) => !tr.passed);
+        setActiveCase(firstFailed >= 0 ? firstFailed : 0);
+      }
+      
+      setBottomTab("result");
     });
 
     return () => {
@@ -125,13 +141,58 @@ function ProblemWorkspace() {
     setCode(LANGUAGE_BOILERPLATES[selectedLang] || "");
   };
 
-  const handleCopyInput = (text) => {
-    navigator.clipboard.writeText(text);
-    const copyLog = { type: "info", message: "Sample input copied to clipboard!" };
-    setConsoleLogs((prev) => [copyLog, ...prev]);
+  // ---- "Run Code" handler (synchronous, sample tests only) ----
+  const handleRunCode = async () => {
+    if (!isAuthenticated) {
+      setError("You must be logged in to run code.");
+      return;
+    }
+    
+    setRunning(true);
+    setVerdict(null);
+    setMetrics(null);
+    setTestResults([]);
+
+    try {
+      // Pass current test case inputs (including custom/edited ones) to backend
+      const casesToRun = testCaseInputs.map((tc) => ({
+        input: tc.input,
+        expectedOutput: tc.expectedOutput,
+        isCustom: tc.isCustom || false,
+      }));
+      const res = await submissionsAPI.runCode(id, language, code, casesToRun);
+      if (res.status === "success" && res.data) {
+        setVerdict(res.data.verdict);
+        setMetrics({
+          time: res.data.executionTime,
+          memory: 0
+        });
+        setTestResults(res.data.testResults || []);
+        
+        // Auto-select first failed test, or first one
+        const firstFailed = (res.data.testResults || []).findIndex((tr) => !tr.passed);
+        setActiveCase(firstFailed >= 0 ? firstFailed : 0);
+        setBottomTab("result");
+      }
+    } catch (err) {
+      setVerdict("ERROR");
+      setTestResults([{
+        testNumber: 1,
+        passed: false,
+        verdict: "ERROR",
+        executionTime: 0,
+        input: "",
+        expectedOutput: "",
+        actualOutput: "",
+        stderr: err.message,
+      }]);
+      setBottomTab("result");
+    } finally {
+      setRunning(false);
+    }
   };
 
-  // Submit Code Sandbox Action
+  // ---- "Submit" handler (async, all tests via BullMQ queue) ----
   const handleSubmit = async () => {
     if (!isAuthenticated) {
       setError("You must be logged in to submit code.");
@@ -140,29 +201,57 @@ function ProblemWorkspace() {
     
     setEvaluating(true);
     setVerdict("PENDING");
-    setActiveTab("console");
-    
-    const startLog = { type: "info", message: `Submitting your ${language} solution to Queue...` };
-    setConsoleLogs((prev) => [startLog, ...prev]);
+    setMetrics(null);
+    setTestResults([]);
+    setBottomTab("result");
 
     try {
-      const res = await submissionsAPI.submitCode(id, language, code);
-      if (res.status === "pending") {
-        const queueLog = { type: "info", message: `Successfully enqueued! Job ID: ${res.data.submissionId}. Evaluating sandbox...` };
-        setConsoleLogs((prev) => [queueLog, ...prev]);
-      }
+      await submissionsAPI.submitCode(id, language, code);
+      // Results will arrive via WebSocket "submission-verdict" event
     } catch (err) {
       setEvaluating(false);
       setVerdict("ERROR");
-      const errorLog = { type: "error", message: `Submission failed: ${err.message}` };
-      setConsoleLogs((prev) => [errorLog, ...prev]);
+      setTestResults([{
+        testNumber: 1,
+        passed: false,
+        verdict: "ERROR",
+        executionTime: 0,
+        input: "",
+        expectedOutput: "",
+        actualOutput: "",
+        stderr: err.message,
+      }]);
     }
+  };
+
+  // ---- Add custom test case ----
+  const handleAddCustomCase = () => {
+    setTestCaseInputs((prev) => [
+      ...prev,
+      { input: "", expectedOutput: "", isCustom: true }
+    ]);
+    setActiveCase(testCaseInputs.length); // select the new one
+  };
+
+  // ---- Remove custom test case ----
+  const handleRemoveCustomCase = (index) => {
+    setTestCaseInputs((prev) => prev.filter((_, i) => i !== index));
+    if (activeCase >= testCaseInputs.length - 1) {
+      setActiveCase(Math.max(0, testCaseInputs.length - 2));
+    }
+  };
+
+  // ---- Update test case input ----
+  const handleTestCaseInputChange = (index, value) => {
+    setTestCaseInputs((prev) =>
+      prev.map((tc, i) => (i === index ? { ...tc, input: value } : tc))
+    );
   };
 
   // Complexity Profiler simulator loop
   const handleProfile = () => {
     setProfiling(true);
-    setActiveTab("profiler");
+    setBottomTab("profiler");
     setProfileData([]);
     
     const inputSizes = [10, 100, 500, 1000, 3000, 5000];
@@ -186,6 +275,97 @@ function ProblemWorkspace() {
       setProfileData([...results]);
       step++;
     }, 400);
+  };
+
+  // ---- Estimate Time Complexity from profiler data using curve fitting ----
+  const estimateTimeComplexity = (data) => {
+    if (data.length < 3) return null;
+
+    // Candidate complexity functions: f(N) → expected scaling
+    const candidates = [
+      { label: "O(1)",        fn: () => 1 },
+      { label: "O(log N)",    fn: (n) => Math.log2(n + 1) },
+      { label: "O(N)",        fn: (n) => n },
+      { label: "O(N log N)",  fn: (n) => n * Math.log2(n + 1) },
+      { label: "O(N²)",       fn: (n) => n * n },
+      { label: "O(N³)",       fn: (n) => n * n * n },
+    ];
+
+    // For each candidate, compute R² score (coefficient of determination)
+    let bestFit = { label: "O(N)", score: -Infinity };
+
+    for (const cand of candidates) {
+      const fVals = data.map((d) => cand.fn(d.size));
+      const tVals = data.map((d) => d.duration);
+
+      // Linear regression: t ≈ a * f(N) + b
+      const n = fVals.length;
+      const sumF = fVals.reduce((a, b) => a + b, 0);
+      const sumT = tVals.reduce((a, b) => a + b, 0);
+      const sumFT = fVals.reduce((acc, f, i) => acc + f * tVals[i], 0);
+      const sumF2 = fVals.reduce((acc, f) => acc + f * f, 0);
+
+      const denom = n * sumF2 - sumF * sumF;
+      if (Math.abs(denom) < 1e-12) continue;
+
+      const a = (n * sumFT - sumF * sumT) / denom;
+      const b = (sumT - a * sumF) / n;
+
+      // Predictions and R²
+      const predicted = fVals.map((f) => a * f + b);
+      const meanT = sumT / n;
+      const ssRes = tVals.reduce((acc, t, i) => acc + (t - predicted[i]) ** 2, 0);
+      const ssTot = tVals.reduce((acc, t) => acc + (t - meanT) ** 2, 0);
+
+      const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+
+      if (r2 > bestFit.score) {
+        bestFit = { label: cand.label, score: r2 };
+      }
+    }
+
+    return bestFit;
+  };
+
+  // ---- Estimate Space Complexity via basic code pattern heuristic ----
+  const estimateSpaceComplexity = (sourceCode) => {
+    if (!sourceCode) return "O(1)";
+
+    const lower = sourceCode.toLowerCase();
+
+    // Check for 2D array patterns → O(N²)
+    if (/\bvector\s*<\s*vector/i.test(sourceCode) ||
+        /\[\s*\]\s*\[\s*\]/i.test(sourceCode) ||
+        /new\s+int\s*\[\s*\w+\s*\]\s*\[\s*\w+\s*\]/i.test(sourceCode) ||
+        /\[\[.*\]\]/i.test(sourceCode)) {
+      return "O(N²)";
+    }
+
+    // Check for map/set/dict/hashmap → O(N)
+    if (/\bmap\b|\bset\b|\bdict\b|\bhashmap\b|\bunordered_map\b|\bunordered_set\b/i.test(sourceCode) ||
+        /new\s+(Map|Set|HashMap|TreeMap|HashSet)/i.test(sourceCode)) {
+      return "O(N)";
+    }
+
+    // Check for array/vector/list allocation → O(N)
+    if (/\bvector\b|\blist\b|\barray\b|\bnew\s+int\s*\[/i.test(sourceCode) ||
+        /\[\s*\]\s*=\s*new/i.test(sourceCode) ||
+        /malloc|calloc/i.test(sourceCode)) {
+      return "O(N)";
+    }
+
+    // Check for recursion (could indicate O(N) stack) 
+    const fnNames = sourceCode.match(/(?:function\s+(\w+)|def\s+(\w+)|void\s+(\w+)|int\s+(\w+))\s*\(/g);
+    if (fnNames) {
+      for (const fn of fnNames) {
+        const name = fn.replace(/^(function|def|void|int)\s+/, "").replace(/\s*\($/, "");
+        if (name && sourceCode.split(name).length > 2) {
+          return "O(N)"; // recursive call detected
+        }
+      }
+    }
+
+    return "O(1)";
   };
 
   if (loading) {
@@ -294,6 +474,10 @@ function ProblemWorkspace() {
     );
   };
 
+  // Get the currently active test case data for display
+  const currentTestInput = testCaseInputs[activeCase] || null;
+  const currentTestResult = testResults[activeCase] || null;
+
   return (
     <div className="workspace-page container">
       {/* 1. Header Toolbar */}
@@ -320,18 +504,9 @@ function ProblemWorkspace() {
           <button 
             className="btn-secondary compile-btn"
             onClick={handleProfile}
-            disabled={profiling || evaluating}
+            disabled={profiling || evaluating || running}
           >
             {profiling ? "Analyzing..." : "Analyze Complexity"}
-          </button>
-          <button
-            className="btn-primary run-btn"
-            onClick={handleSubmit}
-            disabled={evaluating || profiling}
-          >
-            {evaluating ? (
-              <span className="btn-spinner"></span>
-            ) : "Submit Code"}
           </button>
         </div>
       </div>
@@ -381,12 +556,6 @@ function ProblemWorkspace() {
               <div className="problem-section">
                 <div className="section-header">
                   <h4>Sample Input</h4>
-                  <button 
-                    className="copy-btn-link"
-                    onClick={() => handleCopyInput(problem.sampleInput)}
-                  >
-                    Copy
-                  </button>
                 </div>
                 <pre className="monospace-block code-box">{problem.sampleInput}</pre>
               </div>
@@ -401,7 +570,7 @@ function ProblemWorkspace() {
           </div>
         </aside>
 
-        {/* Right Side: Monaco Editor and Console console */}
+        {/* Right Side: Monaco Editor and Bottom Panel */}
         <main className="editor-console-panel">
           {/* Top Column: Monaco Editor */}
           <div className="editor-wrapper glass-card">
@@ -438,31 +607,102 @@ function ProblemWorkspace() {
             </div>
           </div>
 
-          {/* Bottom Column: Console, Profiler & Submissions Tabs */}
+          {/* Bottom Column: LeetCode-style Testcase / Result / Profiler tabs */}
           <div className="console-wrapper glass-card">
             <div className="console-tabs">
               <button
-                className={`tab-btn ${activeTab === "console" ? "active" : ""}`}
-                onClick={() => setActiveTab("console")}
+                className={`tab-btn ${bottomTab === "testcase" ? "active" : ""}`}
+                onClick={() => setBottomTab("testcase")}
               >
-                📟 Output Console
+                📝 Testcase
               </button>
               <button
-                className={`tab-btn ${activeTab === "profiler" ? "active" : ""}`}
-                onClick={() => setActiveTab("profiler")}
+                className={`tab-btn ${bottomTab === "result" ? "active" : ""}`}
+                onClick={() => setBottomTab("result")}
               >
-                📈 Complexity Graph
+                {verdict && verdict !== "PENDING" && (
+                  <span className={`tab-dot ${verdict === "ACCEPTED" ? "dot-pass" : "dot-fail"}`}></span>
+                )}
+                📟 Test Result
+              </button>
+              <button
+                className={`tab-btn ${bottomTab === "profiler" ? "active" : ""}`}
+                onClick={() => setBottomTab("profiler")}
+              >
+                📈 Complexity
               </button>
             </div>
 
             <div className="console-body">
-              {activeTab === "console" && (
-                <div className="console-tab-content">
-                  {/* Verdict display if evaluated */}
+              {/* ========== TESTCASE TAB ========== */}
+              {bottomTab === "testcase" && (
+                <div className="console-tab-content testcase-tab">
+                  {/* Case sub-tabs */}
+                  <div className="case-tabs-row">
+                    {testCaseInputs.map((tc, idx) => (
+                      <button
+                        key={idx}
+                        className={`case-tab ${activeCase === idx ? "active" : ""}`}
+                        onClick={() => setActiveCase(idx)}
+                      >
+                        {tc.isCustom ? `Custom ${testCaseInputs.slice(0, idx).filter(t => t.isCustom).length + 1}` : `Case ${idx + 1}`}
+                        {tc.isCustom && (
+                          <span
+                            className="remove-case-btn"
+                            onClick={(e) => { e.stopPropagation(); handleRemoveCustomCase(idx); }}
+                          >
+                            ×
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    <button className="case-tab add-case-btn" onClick={handleAddCustomCase}>
+                      + Add
+                    </button>
+                  </div>
+
+                  {/* Active case input editor */}
+                  {currentTestInput && (
+                    <div className="case-detail-grid">
+                      <div className="case-field">
+                        <label className="case-field-label">Input</label>
+                        <textarea
+                          className="case-textarea"
+                          value={currentTestInput.input}
+                          onChange={(e) => handleTestCaseInputChange(activeCase, e.target.value)}
+                          placeholder="Enter test input..."
+                          spellCheck={false}
+                        />
+                      </div>
+                      {!currentTestInput.isCustom && currentTestInput.expectedOutput && (
+                        <div className="case-field">
+                          <label className="case-field-label">Expected Output</label>
+                          <div className="case-output-display">
+                            {currentTestInput.expectedOutput}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {testCaseInputs.length === 0 && (
+                    <div className="empty-case-placeholder">
+                      <p>No sample test cases available. Click "+ Add" to create a custom test case.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ========== TEST RESULT TAB ========== */}
+              {bottomTab === "result" && (
+                <div className="console-tab-content result-tab">
+                  {/* Verdict banner */}
                   {verdict && (
                     <div className={`verdict-output-banner ${verdict.toLowerCase()}`}>
                       <span className="verdict-label">Verdict:</span>
                       <span className="verdict-name">{verdict}</span>
+                      {verdict === "PENDING" && (
+                        <span className="btn-spinner verdict-spinner"></span>
+                      )}
                       {metrics && (
                         <span className="verdict-metrics">
                           (Time: {metrics.time}ms | Memory: {metrics.memory} KB)
@@ -471,23 +711,89 @@ function ProblemWorkspace() {
                     </div>
                   )}
 
-                  {/* Standard output streams */}
-                  <div className="console-terminal">
-                    {consoleLogs.length === 0 ? (
-                      <p className="terminal-placeholder">Write code and click "Submit Code" to run the sandbox pipeline.</p>
-                    ) : (
-                      consoleLogs.map((log, index) => (
-                        <div key={index} className={`terminal-line ${log.type}`}>
-                          <span className="terminal-bullet">&gt;</span>
-                          <span className="terminal-text">{log.message}</span>
+                  {/* Case result sub-tabs */}
+                  {testResults.length > 0 && (
+                    <>
+                      <div className="case-tabs-row">
+                        {testResults.map((tr, idx) => (
+                          <button
+                            key={idx}
+                            className={`case-tab ${activeCase === idx ? "active" : ""}`}
+                            onClick={() => setActiveCase(idx)}
+                          >
+                            <span className={`case-dot ${tr.passed ? "dot-pass" : "dot-fail"}`}></span>
+                            {tr.isHidden ? `Hidden ${tr.testNumber}` : (tr.isCustom ? `Custom ${testResults.slice(0, idx).filter(t => t.isCustom).length + 1}` : `Case ${tr.testNumber}`)}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Active case result detail */}
+                      {currentTestResult && (
+                        <div className="case-result-detail">
+                          <div className={`case-result-status ${currentTestResult.passed ? "passed" : "failed"}`}>
+                            {currentTestResult.passed ? "✅ Passed" : `❌ ${currentTestResult.verdict.replace(/_/g, " ")}`}
+                            <span className="case-result-time">({currentTestResult.executionTime}ms)</span>
+                          </div>
+
+                          {/* Show input/output for non-hidden test cases */}
+                          {!currentTestResult.isHidden ? (
+                            <div className="case-detail-grid result-grid">
+                              {currentTestResult.input !== undefined && (
+                                <div className="case-field">
+                                  <label className="case-field-label">Input</label>
+                                  <div className="case-output-display">{currentTestResult.input}</div>
+                                </div>
+                              )}
+                              {currentTestResult.expectedOutput !== undefined && currentTestResult.expectedOutput !== "" && (
+                                <div className="case-field">
+                                  <label className="case-field-label">Expected Output</label>
+                                  <div className="case-output-display">{currentTestResult.expectedOutput}</div>
+                                </div>
+                              )}
+                              {currentTestResult.actualOutput !== undefined && (
+                                <div className="case-field">
+                                  <label className="case-field-label">Your Output</label>
+                                  <div className={`case-output-display ${currentTestResult.passed ? "output-pass" : "output-fail"}`}>
+                                    {currentTestResult.actualOutput || "(empty)"}
+                                  </div>
+                                </div>
+                              )}
+                              {currentTestResult.stderr && (
+                                <div className="case-field">
+                                  <label className="case-field-label stderr-label">Stderr</label>
+                                  <div className="case-output-display stderr-display">
+                                    {currentTestResult.stderr}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="hidden-case-notice">
+                              <span>🔒</span> This is a hidden test case. Input and expected output are not visible.
+                            </div>
+                          )}
                         </div>
-                      ))
-                    )}
-                  </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Empty state */}
+                  {testResults.length === 0 && !verdict && (
+                    <div className="empty-case-placeholder">
+                      <p>Click "Run Code" to test against sample cases, or "Submit" to evaluate against all test cases.</p>
+                    </div>
+                  )}
+                  {verdict === "PENDING" && testResults.length === 0 && (
+                    <div className="empty-case-placeholder pending-placeholder">
+                      <div className="spinner small-spinner"></div>
+                      <p>Evaluating your submission against all test cases...</p>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {activeTab === "profiler" && (
+              {/* ========== PROFILER TAB ========== */}
+              {bottomTab === "profiler" && (
                 <div className="console-tab-content profiler-tab">
                   <div className="profiler-header">
                     <h4>Algorithm Scalability (Time Complexity Plot)</h4>
@@ -521,8 +827,81 @@ function ProblemWorkspace() {
                       {renderProfilerGraph()}
                     </div>
                   </div>
+
+                  {/* Complexity Summary — Time & Space */}
+                  {profileData.length >= 3 && (
+                    <div className="complexity-summary-section">
+                      <h4 className="complexity-summary-title">📊 Complexity Analysis</h4>
+                      <div className="complexity-cards-row">
+                        {/* Time Complexity Card */}
+                        {(() => {
+                          const fit = estimateTimeComplexity(profileData);
+                          return fit ? (
+                            <div className="complexity-card time-card">
+                              <div className="complexity-card-icon">⏱️</div>
+                              <div className="complexity-card-body">
+                                <span className="complexity-card-label">Time Complexity</span>
+                                <span className="complexity-card-value">{fit.label}</span>
+                                <div className="complexity-confidence">
+                                  <span className="confidence-label">Confidence</span>
+                                  <div className="confidence-bar-track">
+                                    <div
+                                      className="confidence-bar-fill"
+                                      style={{ width: `${Math.max(0, Math.min(100, fit.score * 100)).toFixed(0)}%` }}
+                                    />
+                                  </div>
+                                  <span className="confidence-pct">{(fit.score * 100).toFixed(0)}%</span>
+                                </div>
+                              </div>
+                            </div>
+                          ) : null;
+                        })()}
+
+                        {/* Space Complexity Card */}
+                        <div className="complexity-card space-card">
+                          <div className="complexity-card-icon">💾</div>
+                          <div className="complexity-card-body">
+                            <span className="complexity-card-label">Space Complexity</span>
+                            <span className="complexity-card-value">{estimateSpaceComplexity(code)}</span>
+                            <span className="complexity-card-hint">Estimated from code patterns</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
+
+            {/* Bottom Action Bar — Run Code + Submit */}
+            <div className="bottom-action-bar">
+              <div className="action-bar-left">
+                {verdict && verdict !== "PENDING" && (
+                  <span className={`action-bar-verdict ${verdict === "ACCEPTED" ? "verdict-pass" : "verdict-fail"}`}>
+                    {verdict.replace(/_/g, " ")}
+                  </span>
+                )}
+              </div>
+              <div className="action-bar-right">
+                <button
+                  className="btn-run"
+                  onClick={handleRunCode}
+                  disabled={running || evaluating || profiling}
+                >
+                  {running ? (
+                    <><span className="btn-spinner"></span> Running...</>
+                  ) : "▶ Run Code"}
+                </button>
+                <button
+                  className="btn-submit"
+                  onClick={handleSubmit}
+                  disabled={evaluating || running || profiling}
+                >
+                  {evaluating ? (
+                    <><span className="btn-spinner"></span> Submitting...</>
+                  ) : "⬆ Submit"}
+                </button>
+              </div>
             </div>
           </div>
         </main>

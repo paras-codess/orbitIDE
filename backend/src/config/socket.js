@@ -11,25 +11,24 @@ let io = null;
 export const initSocket = (httpServer) => {
   io = new Server(httpServer, {
     cors: {
-      origin: process.env.FRONTEND_URL || "http://localhost:5173",
+      origin: "*",
       methods: ["GET", "POST"],
-      credentials: true,
     },
   });
 
   io.on("connection", (socket) => {
-    // console.log(`🔌 New WebSocket client connected: ${socket.id}`);
+    console.log(`🔌 New WebSocket client connected: ${socket.id}`);
 
     // Join room specifically created for the individual user
     socket.on("join-user-room", (userId) => {
       if (userId) {
         socket.join(userId);
-        // console.log(`👤 Client ${socket.id} joined private user room: ${userId}`);
+        console.log(`👤 Client ${socket.id} joined private user room: ${userId}`);
       }
     });
 
     socket.on("disconnect", () => {
-      // console.log(`🔌 Client disconnected: ${socket.id}`);
+      console.log(`🔌 Client disconnected: ${socket.id}`);
     });
   });
 

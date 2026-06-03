@@ -194,3 +194,8 @@ a:hover {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+
+/* Main content offset for fixed navbar */
+main {
+  padding-top: 64px;
+}

@@ -92,6 +92,12 @@ export const problemsAPI = {
  * Submissions API functions
  */
 export const submissionsAPI = {
+  runCode: (problemId, language, code, customTestCases = null) =>
+    request("/submissions/run", {
+      method: "POST",
+      body: JSON.stringify({ problemId, language, code, ...(customTestCases ? { customTestCases } : {}) }),
+    }),
+
   submitCode: (problemId, language, code) =>
     request("/submissions/submit", {
       method: "POST",
