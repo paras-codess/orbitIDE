@@ -7,6 +7,7 @@ import VerifyEmail from "./pages/VerifyEmail.jsx";
 import ChooseUsername from "./pages/ChooseUsername.jsx";
 import Problems from "./pages/Problems.jsx";
 import ProblemWorkspace from "./pages/ProblemWorkspace.jsx";
+import Dashboard from "./pages/Dashboard.jsx";
 
 function App() {
   return (
@@ -21,6 +22,8 @@ function App() {
           <Route path="/choose-username" element={<ChooseUsername />} />
           <Route path="/problems" element={<Problems />} />
           <Route path="/problems/:id" element={<ProblemWorkspace />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/profile" element={<Dashboard />} />
           {/* Future routes will be added here in later phases */}
           {/* <Route path="/ide" element={<IDE />} /> */}
           {/* <Route path="/contests" element={<Contests />} /> */}

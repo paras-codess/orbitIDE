@@ -8,6 +8,9 @@ const CACHE_TTL = 3600;
  * Helper to clear all problem-related lists from Redis.
  */
 const clearProblemListCaches = async () => {
+  if (redis.status !== "ready") {
+    return;
+  }
   try {
     const keys = await redis.keys("problems:list:*");
     const topicKeys = await redis.keys("problems:topics");

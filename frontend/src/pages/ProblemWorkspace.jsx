@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import { io } from "socket.io-client";
@@ -45,12 +45,52 @@ function ProblemWorkspace() {
 
   const socketRef = useRef(null);
 
+  // ---- Resizable Panel State ----
+  const [leftPanelWidth, setLeftPanelWidth] = useState(40); // percent of workspace-grid width
+  const [editorHeightPercent, setEditorHeightPercent] = useState(65); // percent of editor-console height
+  const [isDraggingH, setIsDraggingH] = useState(false); // horizontal splitter active
+  const [isDraggingV, setIsDraggingV] = useState(false); // vertical splitter active
+  const workspaceGridRef = useRef(null);
+  const editorConsolePanelRef = useRef(null);
+
   // Redirect if not authenticated
   useEffect(() => {
     if (!loading && !isAuthenticated) {
       navigate("/login");
     }
   }, [isAuthenticated, loading, navigate]);
+
+  // ---- Global mouse handlers for resizable panels ----
+  const handleMouseMove = useCallback((e) => {
+    if (isDraggingH && workspaceGridRef.current) {
+      const rect = workspaceGridRef.current.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left;
+      const pct = (offsetX / rect.width) * 100;
+      setLeftPanelWidth(Math.min(80, Math.max(20, pct)));
+    }
+    if (isDraggingV && editorConsolePanelRef.current) {
+      const rect = editorConsolePanelRef.current.getBoundingClientRect();
+      const offsetY = e.clientY - rect.top;
+      const pct = (offsetY / rect.height) * 100;
+      setEditorHeightPercent(Math.min(85, Math.max(15, pct)));
+    }
+  }, [isDraggingH, isDraggingV]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDraggingH(false);
+    setIsDraggingV(false);
+  }, []);
+
+  useEffect(() => {
+    if (isDraggingH || isDraggingV) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isDraggingH, isDraggingV, handleMouseMove, handleMouseUp]);
 
   // Load Problem Details
   useEffect(() => {
@@ -511,10 +551,21 @@ function ProblemWorkspace() {
         </div>
       </div>
 
+      {/* Drag overlay to prevent text selection/iframe capture during resize */}
+      {(isDraggingH || isDraggingV) && (
+        <div
+          className="resize-overlay"
+          style={{ cursor: isDraggingH ? 'col-resize' : 'row-resize' }}
+        />
+      )}
+
       {/* 2. Main Workspace split panels */}
-      <div className="workspace-grid">
+      <div className="workspace-grid" ref={workspaceGridRef}>
         {/* Left Side: Problem Details */}
-        <aside className="problem-sidebar-panel glass-card">
+        <aside
+          className="problem-sidebar-panel glass-card"
+          style={{ width: `${leftPanelWidth}%` }}
+        >
           <div className="problem-meta-row">
             <span className={`difficulty-badge ${problem.difficulty.toLowerCase()}`}>
               {problem.difficulty}
@@ -570,10 +621,16 @@ function ProblemWorkspace() {
           </div>
         </aside>
 
+        {/* Horizontal Resize Handle */}
+        <div
+          className={`resize-handle-horizontal ${isDraggingH ? 'dragging' : ''}`}
+          onMouseDown={(e) => { e.preventDefault(); setIsDraggingH(true); }}
+        />
+
         {/* Right Side: Monaco Editor and Bottom Panel */}
-        <main className="editor-console-panel">
+        <main className="editor-console-panel" ref={editorConsolePanelRef}>
           {/* Top Column: Monaco Editor */}
-          <div className="editor-wrapper glass-card">
+          <div className="editor-wrapper glass-card" style={{ height: `${editorHeightPercent}%` }}>
             <div className="editor-top-bar">
               <span className="panel-tab-title">🧑‍💻 Source Code Editor</span>
               <div className="language-selector">
@@ -606,6 +663,12 @@ function ProblemWorkspace() {
               />
             </div>
           </div>
+
+          {/* Vertical Resize Handle */}
+          <div
+            className={`resize-handle-vertical ${isDraggingV ? 'dragging' : ''}`}
+            onMouseDown={(e) => { e.preventDefault(); setIsDraggingV(true); }}
+          />
 
           {/* Bottom Column: LeetCode-style Testcase / Result / Profiler tabs */}
           <div className="console-wrapper glass-card">

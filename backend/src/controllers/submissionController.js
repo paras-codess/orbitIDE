@@ -1,6 +1,7 @@
 import prisma from "../config/db.js";
 import { enqueueSubmission } from "../services/submissionQueue.js";
-import { executeOnWandbox } from "../services/submissionWorker.js";
+import { executeOnWandbox, processSubmission } from "../services/submissionWorker.js";
+import redis from "../config/redis.js";
 
 // ------------------------------------
 // POST /api/submissions/run
@@ -198,18 +199,48 @@ export const submitCode = async (req, res) => {
     });
 
     // ---- Enqueue for async processing ----
-    await enqueueSubmission({
-      submissionId: submission.id,
-      code,
-      language: language.toLowerCase(),
-      problemId,
-      userId,
-    });
+    let enqueuedSuccessfully = false;
+    if (redis.status === "ready") {
+      try {
+        await enqueueSubmission({
+          submissionId: submission.id,
+          code,
+          language: language.toLowerCase(),
+          problemId,
+          userId,
+        });
+        enqueuedSuccessfully = true;
+      } catch (queueError) {
+        console.warn(`⚠️ Failed to enqueue submission ${submission.id}: ${queueError.message}`);
+      }
+    }
+
+    if (!enqueuedSuccessfully) {
+      // Offline fallback: Process in background using setImmediate
+      setImmediate(async () => {
+        try {
+          console.log(`⚠️ Redis is offline or queue failed. Processing submission ${submission.id} via in-memory fallback.`);
+          await processSubmission({
+            data: {
+              submissionId: submission.id,
+              code,
+              language: language.toLowerCase(),
+              problemId,
+              userId,
+            },
+          });
+        } catch (fallbackError) {
+          console.error(`💥 Fallback processing failed for submission ${submission.id}:`, fallbackError.message);
+        }
+      });
+    }
 
     // ---- Return 202 Accepted ----
     return res.status(202).json({
       status: "pending",
-      message: "Submission received and queued for processing.",
+      message: enqueuedSuccessfully 
+        ? "Submission received and queued for processing."
+        : "Submission received and processing in fallback mode.",
       data: {
         submissionId: submission.id,
         verdict: "PENDING",

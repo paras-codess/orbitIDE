@@ -112,3 +112,11 @@ export const submissionsAPI = {
     return request(`/submissions/my?${query.toString()}`);
   },
 };
+
+/**
+ * User API functions
+ */
+export const userAPI = {
+  getUserStats: () => request("/users/stats"),
+};
+

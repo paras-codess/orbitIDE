@@ -15,6 +15,9 @@ const createLimiter = (options) => {
       // Use sendCommand for ioredis integration
       // Lazy check: attempt the call and let passOnStoreError handle failures
       sendCommand: (...args) => {
+        if (redis.status !== "ready") {
+          throw new Error("Redis is not connected");
+        }
         return redis.call(...args);
       },
       prefix: `rl:orbitide:${prefix}:${process.env.USERNAME || "default"}:`,

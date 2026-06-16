@@ -2,6 +2,7 @@ import { Worker } from "bullmq";
 import prisma from "../config/db.js";
 import dotenv from "dotenv";
 import { emitSubmissionVerdict } from "../config/socket.js";
+import redis from "../config/redis.js";
 
 dotenv.config();
 
@@ -15,11 +16,11 @@ const WANDBOX_API_URL = process.env.WANDBOX_API_URL || "https://wandbox.org/api"
 // Language → Wandbox compiler mapping
 // ------------------------------------
 const COMPILER_MAP = {
-  c: "gcc-head-c",
-  cpp: "gcc-head",
-  java: "openjdk-head",
-  python: "cpython-head",
-  javascript: "nodejs-head",
+  c: "gcc-13.2.0-c",
+  cpp: "gcc-13.2.0",
+  java: "openjdk-jdk-21+35",
+  python: "cpython-3.13.8",
+  javascript: "nodejs-20.17.0",
 };
 
 // ------------------------------------
@@ -35,6 +36,13 @@ const connection = {
   username: parsedUrl.username || undefined,
   tls: parsedUrl.protocol === "rediss:" ? {} : undefined,
   maxRetriesPerRequest: null, // Required by BullMQ workers
+  retryStrategy(times) {
+    const delay = Math.min(times * 100, 3000);
+    if (times > 5) {
+      return null; // Stop retrying
+    }
+    return delay;
+  },
 };
 
 // ------------------------------------
@@ -91,7 +99,7 @@ export const executeOnWandbox = async (code, language, stdin) => {
 // ------------------------------------
 // Worker Processor — Runs per job
 // ------------------------------------
-const processSubmission = async (job) => {
+export const processSubmission = async (job) => {
   const { submissionId, code, language, problemId, userId } = job.data;
 
   console.log(`⚙️  Processing submission ${submissionId} [${language}]`);
@@ -233,6 +241,17 @@ const processSubmission = async (job) => {
 
     if (problem?.topic) {
       await updateUserTopicStat(userId, problem.topic, finalVerdict);
+    }
+
+    // Invalidate user stats cache in Redis
+    if (redis.status === "ready") {
+      try {
+        const cacheKey = `rl:orbitide:stats:${userId}`;
+        await redis.del(cacheKey);
+        console.log(`🧹 Invalidated stats cache for user: ${userId}`);
+      } catch (err) {
+        console.error("⚠️ Failed to invalidate user stats cache in Redis:", err.message);
+      }
     }
 
     return { verdict: finalVerdict, executionTime: maxExecutionTime, memoryUsage: maxMemoryUsage };
