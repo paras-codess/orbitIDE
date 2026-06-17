@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import { io } from "socket.io-client";
 import { useAuth } from "../context/AuthContext.jsx";
 import { problemsAPI, submissionsAPI } from "../services/api.js";
+import { analyzeComplexity } from "../utils/complexityAnalyzer.js";
 import "./ProblemWorkspace.css";
 
 const LANGUAGE_BOILERPLATES = {
@@ -45,12 +46,77 @@ function ProblemWorkspace() {
 
   const socketRef = useRef(null);
 
+  // Submissions Sidebar & Modal State
+  const [sidebarTab, setSidebarTab] = useState("description"); // "description" | "submissions"
+  const [mySubmissions, setMySubmissions] = useState([]);
+  const [loadingSubmissions, setLoadingSubmissions] = useState(false);
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
+
+  const fetchSubmissions = useCallback(async () => {
+    if (!isAuthenticated) return;
+    setLoadingSubmissions(true);
+    try {
+      const res = await submissionsAPI.getMySubmissions(id);
+      if (res.status === "success") {
+        setMySubmissions(res.data.submissions);
+      }
+    } catch (err) {
+      console.error("Failed to load submissions:", err);
+    } finally {
+      setLoadingSubmissions(false);
+    }
+  }, [id, isAuthenticated]);
+
+  useEffect(() => {
+    fetchSubmissions();
+  }, [id, fetchSubmissions]);
+
+  // ---- Resizable Panel State ----
+  const [leftPanelWidth, setLeftPanelWidth] = useState(40); // percent of workspace-grid width
+  const [editorHeightPercent, setEditorHeightPercent] = useState(65); // percent of editor-console height
+  const [isDraggingH, setIsDraggingH] = useState(false); // horizontal splitter active
+  const [isDraggingV, setIsDraggingV] = useState(false); // vertical splitter active
+  const workspaceGridRef = useRef(null);
+  const editorConsolePanelRef = useRef(null);
+
   // Redirect if not authenticated
   useEffect(() => {
     if (!loading && !isAuthenticated) {
       navigate("/login");
     }
   }, [isAuthenticated, loading, navigate]);
+
+  // ---- Global mouse handlers for resizable panels ----
+  const handleMouseMove = useCallback((e) => {
+    if (isDraggingH && workspaceGridRef.current) {
+      const rect = workspaceGridRef.current.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left;
+      const pct = (offsetX / rect.width) * 100;
+      setLeftPanelWidth(Math.min(80, Math.max(20, pct)));
+    }
+    if (isDraggingV && editorConsolePanelRef.current) {
+      const rect = editorConsolePanelRef.current.getBoundingClientRect();
+      const offsetY = e.clientY - rect.top;
+      const pct = (offsetY / rect.height) * 100;
+      setEditorHeightPercent(Math.min(85, Math.max(15, pct)));
+    }
+  }, [isDraggingH, isDraggingV]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDraggingH(false);
+    setIsDraggingV(false);
+  }, []);
+
+  useEffect(() => {
+    if (isDraggingH || isDraggingV) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isDraggingH, isDraggingV, handleMouseMove, handleMouseUp]);
 
   // Load Problem Details
   useEffect(() => {
@@ -126,6 +192,8 @@ function ProblemWorkspace() {
       }
       
       setBottomTab("result");
+      // Refresh submissions if the list is mounted
+      fetchSubmissions();
     });
 
     return () => {
@@ -133,7 +201,7 @@ function ProblemWorkspace() {
         socket.disconnect();
       }
     };
-  }, [user]);
+  }, [user, fetchSubmissions]);
 
   const handleLanguageChange = (e) => {
     const selectedLang = e.target.value;
@@ -254,9 +322,13 @@ function ProblemWorkspace() {
     setBottomTab("profiler");
     setProfileData([]);
     
+    const complexity = analyzeComplexity(code, language).time;
     const inputSizes = [10, 100, 500, 1000, 3000, 5000];
     let step = 0;
     const results = [];
+    
+    // Base coefficient based on language
+    const baseMs = language === "python" || language === "javascript" ? 1.5 : 0.3;
 
     const interval = setInterval(() => {
       if (step >= inputSizes.length) {
@@ -266,10 +338,24 @@ function ProblemWorkspace() {
       }
 
       const N = inputSizes[step];
-      // Generate realistic runtimes representing O(N) runtime scaling with small random deviation
-      const baseMs = language === "python" || language === "javascript" ? 1.8 : 0.4;
-      const noise = Math.random() * 0.3;
-      const calculatedTime = parseFloat((N * 0.0035 * baseMs + noise + 0.1).toFixed(2));
+      let factor = 1;
+      
+      if (complexity === "O(N²)") {
+        factor = N * N * 0.000002;
+      } else if (complexity === "O(N³)") {
+        factor = N * N * N * 0.000000001;
+      } else if (complexity === "O(N log N)") {
+        factor = N * Math.log2(N + 1) * 0.0015;
+      } else if (complexity === "O(N)") {
+        factor = N * 0.004;
+      } else if (complexity === "O(log N)") {
+        factor = Math.log2(N + 1) * 0.06;
+      } else { // O(1)
+        factor = 1;
+      }
+      
+      const noise = Math.random() * 0.08 * (factor + 1);
+      const calculatedTime = parseFloat((factor * baseMs + noise + 0.05).toFixed(2));
       
       results.push({ size: N, duration: calculatedTime });
       setProfileData([...results]);
@@ -327,45 +413,9 @@ function ProblemWorkspace() {
     return bestFit;
   };
 
-  // ---- Estimate Space Complexity via basic code pattern heuristic ----
+  // ---- Estimate Space Complexity via static code patterns ----
   const estimateSpaceComplexity = (sourceCode) => {
-    if (!sourceCode) return "O(1)";
-
-    const lower = sourceCode.toLowerCase();
-
-    // Check for 2D array patterns → O(N²)
-    if (/\bvector\s*<\s*vector/i.test(sourceCode) ||
-        /\[\s*\]\s*\[\s*\]/i.test(sourceCode) ||
-        /new\s+int\s*\[\s*\w+\s*\]\s*\[\s*\w+\s*\]/i.test(sourceCode) ||
-        /\[\[.*\]\]/i.test(sourceCode)) {
-      return "O(N²)";
-    }
-
-    // Check for map/set/dict/hashmap → O(N)
-    if (/\bmap\b|\bset\b|\bdict\b|\bhashmap\b|\bunordered_map\b|\bunordered_set\b/i.test(sourceCode) ||
-        /new\s+(Map|Set|HashMap|TreeMap|HashSet)/i.test(sourceCode)) {
-      return "O(N)";
-    }
-
-    // Check for array/vector/list allocation → O(N)
-    if (/\bvector\b|\blist\b|\barray\b|\bnew\s+int\s*\[/i.test(sourceCode) ||
-        /\[\s*\]\s*=\s*new/i.test(sourceCode) ||
-        /malloc|calloc/i.test(sourceCode)) {
-      return "O(N)";
-    }
-
-    // Check for recursion (could indicate O(N) stack) 
-    const fnNames = sourceCode.match(/(?:function\s+(\w+)|def\s+(\w+)|void\s+(\w+)|int\s+(\w+))\s*\(/g);
-    if (fnNames) {
-      for (const fn of fnNames) {
-        const name = fn.replace(/^(function|def|void|int)\s+/, "").replace(/\s*\($/, "");
-        if (name && sourceCode.split(name).length > 2) {
-          return "O(N)"; // recursive call detected
-        }
-      }
-    }
-
-    return "O(1)";
+    return analyzeComplexity(sourceCode, language).space;
   };
 
   if (loading) {
@@ -511,69 +561,167 @@ function ProblemWorkspace() {
         </div>
       </div>
 
+      {/* Drag overlay to prevent text selection/iframe capture during resize */}
+      {(isDraggingH || isDraggingV) && (
+        <div
+          className="resize-overlay"
+          style={{ cursor: isDraggingH ? 'col-resize' : 'row-resize' }}
+        />
+      )}
+
       {/* 2. Main Workspace split panels */}
-      <div className="workspace-grid">
-        {/* Left Side: Problem Details */}
-        <aside className="problem-sidebar-panel glass-card">
-          <div className="problem-meta-row">
-            <span className={`difficulty-badge ${problem.difficulty.toLowerCase()}`}>
-              {problem.difficulty}
-            </span>
-            <span className="topic-badge">{problem.topic}</span>
-            {problem.subtopic && <span className="subtopic-badge">{problem.subtopic}</span>}
+      <div className="workspace-grid" ref={workspaceGridRef}>
+        {/* Left Side: Problem Sidebar with Description / Submissions Tabs */}
+        <aside
+          className="problem-sidebar-panel glass-card"
+          style={{ width: `${leftPanelWidth}%` }}
+        >
+          <div className="sidebar-tabs-bar">
+            <button
+              className={`sidebar-tab-btn ${sidebarTab === "description" ? "active" : ""}`}
+              onClick={() => setSidebarTab("description")}
+            >
+              📋 Description
+            </button>
+            <button
+              className={`sidebar-tab-btn ${sidebarTab === "submissions" ? "active" : ""}`}
+              onClick={() => setSidebarTab("submissions")}
+            >
+              🕒 Submissions
+            </button>
           </div>
 
-          <h1 className="problem-title">{problem.title}</h1>
-          <div className="divider-line"></div>
-
-          <div className="problem-description-content">
-            <h3>Problem Statement</h3>
-            <p className="statement-text">{problem.description}</p>
-
-            {problem.constraints && (
-              <div className="problem-section">
-                <h4>Constraints</h4>
-                <pre className="monospace-block">{problem.constraints}</pre>
-              </div>
-            )}
-
-            {problem.inputFormat && (
-              <div className="problem-section">
-                <h4>Input Format</h4>
-                <p>{problem.inputFormat}</p>
-              </div>
-            )}
-
-            {problem.outputFormat && (
-              <div className="problem-section">
-                <h4>Output Format</h4>
-                <p>{problem.outputFormat}</p>
-              </div>
-            )}
-
-            {/* Test Case Samples */}
-            {problem.sampleInput && (
-              <div className="problem-section">
-                <div className="section-header">
-                  <h4>Sample Input</h4>
+          <div className="sidebar-tab-body">
+            {sidebarTab === "description" ? (
+              <div className="description-tab-content">
+                <div className="problem-meta-row">
+                  <span className={`difficulty-badge ${problem.difficulty.toLowerCase()}`}>
+                    {problem.difficulty}
+                  </span>
+                  <span className="topic-badge">{problem.topic}</span>
+                  {problem.subtopic && <span className="subtopic-badge">{problem.subtopic}</span>}
                 </div>
-                <pre className="monospace-block code-box">{problem.sampleInput}</pre>
-              </div>
-            )}
 
-            {problem.sampleOutput && (
-              <div className="problem-section">
-                <h4>Sample Output</h4>
-                <pre className="monospace-block code-box">{problem.sampleOutput}</pre>
+                <h1 className="problem-title">
+                  {mySubmissions.some((sub) => sub.verdict === "ACCEPTED") && (
+                    <span className="title-solved-tick-circle" title="Solved">
+                      <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" strokeWidth="4" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                    </span>
+                  )}
+                  {problem.title}
+                </h1>
+                <div className="divider-line"></div>
+
+                <div className="problem-description-content">
+                  <h3>Problem Statement</h3>
+                  <p className="statement-text">{problem.description}</p>
+
+                  {problem.constraints && (
+                    <div className="problem-section">
+                      <h4>Constraints</h4>
+                      <pre className="monospace-block">{problem.constraints}</pre>
+                    </div>
+                  )}
+
+                  {problem.inputFormat && (
+                    <div className="problem-section">
+                      <h4>Input Format</h4>
+                      <p>{problem.inputFormat}</p>
+                    </div>
+                  )}
+
+                  {problem.outputFormat && (
+                    <div className="problem-section">
+                      <h4>Output Format</h4>
+                      <p>{problem.outputFormat}</p>
+                    </div>
+                  )}
+
+                  {/* Test Case Samples */}
+                  {problem.sampleInput && (
+                    <div className="problem-section">
+                      <div className="section-header">
+                        <h4>Sample Input</h4>
+                      </div>
+                      <pre className="monospace-block code-box">{problem.sampleInput}</pre>
+                    </div>
+                  )}
+
+                  {problem.sampleOutput && (
+                    <div className="problem-section">
+                      <h4>Sample Output</h4>
+                      <pre className="monospace-block code-box">{problem.sampleOutput}</pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="submissions-tab-content">
+                <h2 className="tab-section-title">Submission History</h2>
+                {loadingSubmissions ? (
+                  <div className="submissions-loading">
+                    <div className="spinner small-spinner"></div>
+                    <p>Loading your submission history...</p>
+                  </div>
+                ) : mySubmissions.length === 0 ? (
+                  <div className="submissions-empty">
+                    <span className="empty-icon">🕒</span>
+                    <p>You haven't submitted any code for this problem yet.</p>
+                  </div>
+                ) : (
+                  <div className="submissions-list">
+                    {mySubmissions.map((sub) => {
+                      const verdictClass = sub.verdict.toLowerCase();
+                      const formattedDate = new Date(sub.createdAt).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit"
+                      });
+                      
+                      return (
+                        <div
+                          key={sub.id}
+                          className="submission-list-item glass-card"
+                          onClick={() => setSelectedSubmission(sub)}
+                        >
+                          <div className="submission-item-header">
+                            <span className={`submission-item-verdict ${verdictClass}`}>
+                              {sub.verdict.replace(/_/g, " ")}
+                            </span>
+                            <span className="submission-item-date">{formattedDate}</span>
+                          </div>
+                          <div className="submission-item-footer">
+                            <span className="submission-item-lang">{sub.language}</span>
+                            {sub.executionTime !== null && (
+                              <span className="submission-item-metric">⏱️ {sub.executionTime}ms</span>
+                            )}
+                            {sub.memoryUsage !== null && sub.memoryUsage > 0 && (
+                              <span className="submission-item-metric">💾 {sub.memoryUsage} KB</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
         </aside>
 
+        {/* Horizontal Resize Handle */}
+        <div
+          className={`resize-handle-horizontal ${isDraggingH ? 'dragging' : ''}`}
+          onMouseDown={(e) => { e.preventDefault(); setIsDraggingH(true); }}
+        />
+
         {/* Right Side: Monaco Editor and Bottom Panel */}
-        <main className="editor-console-panel">
+        <main className="editor-console-panel" ref={editorConsolePanelRef}>
           {/* Top Column: Monaco Editor */}
-          <div className="editor-wrapper glass-card">
+          <div className="editor-wrapper glass-card" style={{ height: `${editorHeightPercent}%` }}>
             <div className="editor-top-bar">
               <span className="panel-tab-title">🧑‍💻 Source Code Editor</span>
               <div className="language-selector">
@@ -606,6 +754,12 @@ function ProblemWorkspace() {
               />
             </div>
           </div>
+
+          {/* Vertical Resize Handle */}
+          <div
+            className={`resize-handle-vertical ${isDraggingV ? 'dragging' : ''}`}
+            onMouseDown={(e) => { e.preventDefault(); setIsDraggingV(true); }}
+          />
 
           {/* Bottom Column: LeetCode-style Testcase / Result / Profiler tabs */}
           <div className="console-wrapper glass-card">
@@ -906,6 +1060,84 @@ function ProblemWorkspace() {
           </div>
         </main>
       </div>
+
+      {/* Submissions Detail Modal */}
+      {selectedSubmission && (
+        <div className="modal-overlay" onClick={() => setSelectedSubmission(null)}>
+          <div className="submission-modal glass-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Submission Details</h3>
+              <button className="close-modal-btn" onClick={() => setSelectedSubmission(null)}>×</button>
+            </div>
+            
+            <div className="modal-body">
+              <div className="submission-meta-grid">
+                <div className="meta-item">
+                  <span className="meta-label">Verdict</span>
+                  <span className={`meta-value verdict-badge ${selectedSubmission.verdict.toLowerCase()}`}>
+                    {selectedSubmission.verdict.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <div className="meta-item">
+                  <span className="meta-label">Language</span>
+                  <span className="meta-value">{selectedSubmission.language}</span>
+                </div>
+                {selectedSubmission.executionTime !== null && (
+                  <div className="meta-item">
+                    <span className="meta-label">Runtime</span>
+                    <span className="meta-value">{selectedSubmission.executionTime} ms</span>
+                  </div>
+                )}
+                {selectedSubmission.memoryUsage !== null && selectedSubmission.memoryUsage > 0 && (
+                  <div className="meta-item">
+                    <span className="meta-label">Memory</span>
+                    <span className="meta-value">{selectedSubmission.memoryUsage} KB</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Complexity Analysis */}
+              {(() => {
+                const complexity = analyzeComplexity(selectedSubmission.code, selectedSubmission.language);
+                return (
+                  <div className="modal-complexity-row">
+                    <div className="modal-complexity-card time">
+                      <span className="comp-label">Estimated Time Complexity</span>
+                      <span className="comp-value">{complexity.time}</span>
+                    </div>
+                    <div className="modal-complexity-card space">
+                      <span className="comp-label">Estimated Space Complexity</span>
+                      <span className="comp-value">{complexity.space}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Monaco Read-only Code View */}
+              <div className="modal-code-section">
+                <h4>Submitted Code</h4>
+                <div className="modal-monaco-wrapper">
+                  <Editor
+                    height="100%"
+                    language={selectedSubmission.language}
+                    theme={editorTheme}
+                    value={selectedSubmission.code}
+                    options={{
+                      readOnly: true,
+                      fontSize: 13,
+                      minimap: { enabled: false },
+                      automaticLayout: true,
+                      scrollBeyondLastLine: false,
+                      lineNumbersMinChars: 3,
+                      fontFamily: "'Courier New', Courier, monospace"
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

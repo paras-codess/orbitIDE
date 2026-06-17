@@ -251,7 +251,8 @@ function Problems() {
                 <table className="problems-table">
                   <thead>
                     <tr>
-                      <th style={{ width: "60%" }}>Problem Title</th>
+                      <th style={{ width: "8%", textAlign: "center" }}>Status</th>
+                      <th style={{ width: "52%" }}>Problem Title</th>
                       <th style={{ width: "20%" }}>Difficulty</th>
                       <th style={{ width: "20%" }}>Topic</th>
                     </tr>
@@ -259,6 +260,13 @@ function Problems() {
                   <tbody>
                     {problems.map((prob) => (
                       <tr key={prob.id}>
+                        <td className="problem-status-cell" style={{ textAlign: "center" }}>
+                          {prob.isSolved ? (
+                            <span className="solved-tick-icon" title="Solved">✔️</span>
+                          ) : (
+                            <span className="unsolved-dot-icon" title="Unsolved"></span>
+                          )}
+                        </td>
                         <td className="problem-title-cell">
                           <Link to={`/problems/${prob.id}`} className="problem-link">
                             {prob.title}

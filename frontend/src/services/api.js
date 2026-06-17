@@ -112,3 +112,22 @@ export const submissionsAPI = {
     return request(`/submissions/my?${query.toString()}`);
   },
 };
+
+/**
+ * User API functions
+ */
+export const userAPI = {
+  getUserStats: () => request("/users/stats"),
+};
+
+/**
+ * Visualizer API functions
+ */
+export const visualizerAPI = {
+  visualize: (language, code, stdin = "") =>
+    request("/visualize", {
+      method: "POST",
+      body: JSON.stringify({ language, code, stdin }),
+    }),
+};
+

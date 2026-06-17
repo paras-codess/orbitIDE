@@ -16,27 +16,42 @@ const connection = {
   password: parsedUrl.password ? decodeURIComponent(parsedUrl.password) : undefined,
   username: parsedUrl.username || undefined,
   tls: parsedUrl.protocol === "rediss:" ? {} : undefined,
+  maxRetriesPerRequest: null,
+  retryStrategy(times) {
+    const delay = Math.min(times * 100, 3000);
+    if (times > 5) {
+      return null; // Stop retrying
+    }
+    return delay;
+  },
 };
 
 // ------------------------------------
-// Submission Queue Definition
+// Submission Queue Definition (Lazy Initialization)
 // ------------------------------------
-const submissionQueue = new Queue("submission-queue", {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: "exponential",
-      delay: 2000,
-    },
-    removeOnComplete: { count: 500 },  // keep last 500 completed jobs
-    removeOnFail: { count: 200 },       // keep last 200 failed jobs
-  },
-});
+let submissionQueue = null;
 
-submissionQueue.on("error", (err) => {
-  console.error("❌ Submission Queue error:", err.message);
-});
+const getSubmissionQueue = () => {
+  if (!submissionQueue) {
+    submissionQueue = new Queue("submission-queue", {
+      connection,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 2000,
+        },
+        removeOnComplete: { count: 500 },  // keep last 500 completed jobs
+        removeOnFail: { count: 200 },       // keep last 200 failed jobs
+      },
+    });
+
+    submissionQueue.on("error", (err) => {
+      console.error("❌ Submission Queue error:", err.message);
+    });
+  }
+  return submissionQueue;
+};
 
 /**
  * Enqueue a code submission for async processing by the worker.
@@ -50,11 +65,12 @@ submissionQueue.on("error", (err) => {
  * @returns {Promise<import("bullmq").Job>}
  */
 export const enqueueSubmission = async (data) => {
-  const job = await submissionQueue.add("process-submission", data, {
+  const queue = getSubmissionQueue();
+  const job = await queue.add("process-submission", data, {
     jobId: data.submissionId, // prevents duplicate jobs for the same submission
   });
   console.log(`📥 Enqueued submission ${data.submissionId} as job ${job.id}`);
   return job;
 };
 
-export default submissionQueue;
+export default getSubmissionQueue;

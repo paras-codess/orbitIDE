@@ -6,9 +6,12 @@ import prisma from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import problemRoutes from "./routes/problemRoutes.js";
 import submissionRoutes from "./routes/submissionRoutes.js";
+import userRoutes from "./routes/userRoutes.js";
+import visualizerRoutes from "./routes/visualizerRoutes.js";
 import { generalLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import { startSubmissionWorker } from "./services/submissionWorker.js";
 import { initSocket } from "./config/socket.js";
+import redis from "./config/redis.js";
 
 // Load environment variables
 dotenv.config();
@@ -56,6 +59,8 @@ app.get("/api/health", async (req, res) => {
 app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/problems", problemRoutes);
 app.use("/api/submissions", submissionRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/visualize", visualizerRoutes);
 // app.use("/api/contests", contestRoutes); // Phase 8
 
 // ------------------------------------
@@ -75,9 +80,16 @@ app.use((err, req, res, next) => {
 httpServer.listen(PORT, () => {
   console.log(`\n OrbitIDE AI Backend running on http://localhost:${PORT}`);
 
-  // Start the BullMQ submission worker
-  startSubmissionWorker();
-  console.log(`📋 Submission queue worker initialized`);
+  // Start the BullMQ submission worker only if Redis is ready
+  if (redis.status === "ready") {
+    startSubmissionWorker();
+    console.log(`📋 Submission queue worker initialized`);
+  } else {
+    redis.once("ready", () => {
+      startSubmissionWorker();
+      console.log(`📋 Submission queue worker initialized`);
+    });
+  }
 });
 
 export default app;
