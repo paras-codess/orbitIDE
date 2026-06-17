@@ -7,12 +7,12 @@ import {
   updateProblem,
   deleteProblem,
 } from "../controllers/problemController.js";
-import { authenticate, authorizeAdmin } from "../middleware/auth.js";
+import { authenticate, authorizeAdmin, optionalAuthenticate } from "../middleware/auth.js";
 
 const router = Router();
 
 // Public routes
-router.get("/", getProblems);
+router.get("/", optionalAuthenticate, getProblems);
 router.get("/topics", getTopics);
 router.get("/:id", getProblemById);
 

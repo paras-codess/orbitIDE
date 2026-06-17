@@ -70,3 +70,40 @@ export const authorizeAdmin = (req, res, next) => {
   }
   next();
 };
+
+/**
+ * Optional Authentication Middleware
+ * If a valid JWT is present, attaches user to req.user.
+ * If not, proceeds without blocking/error.
+ */
+export const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return next();
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        avatar: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+
+    if (user) {
+      req.user = user;
+    }
+    next();
+  } catch (error) {
+    // Silently fail and proceed unauthenticated if token is invalid or expired
+    next();
+  }
+};

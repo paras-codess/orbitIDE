@@ -1,6 +1,6 @@
 import prisma from "../config/db.js";
 import { enqueueSubmission } from "../services/submissionQueue.js";
-import { executeOnWandbox, processSubmission } from "../services/submissionWorker.js";
+import { executeCode, processSubmission } from "../services/submissionWorker.js";
 import redis from "../config/redis.js";
 
 // ------------------------------------
@@ -72,7 +72,7 @@ export const runCode = async (req, res) => {
       const startTime = Date.now();
 
       try {
-        const result = await executeOnWandbox(code, language.toLowerCase(), tc.input);
+        const result = await executeCode(code, language.toLowerCase(), tc.input);
         const executionTime = Date.now() - startTime;
         maxTime = Math.max(maxTime, executionTime);
 
@@ -329,6 +329,7 @@ export const getMySubmissions = async (req, res) => {
           id: true,
           problemId: true,
           language: true,
+          code: true,
           verdict: true,
           executionTime: true,
           memoryUsage: true,

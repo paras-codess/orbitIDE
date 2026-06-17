@@ -24,6 +24,23 @@ const COMPILER_MAP = {
 };
 
 // ------------------------------------
+// Piston API Configuration (FREE fallback — No API key needed!)
+// https://emkc.org
+// ------------------------------------
+const PISTON_API_URL = process.env.PISTON_API_URL || "https://emkc.org/api/v2/piston/execute";
+
+const PISTON_MAP = {
+  c:          { language: "c",          version: "10.2.0"  },
+  cpp:        { language: "c++",        version: "10.2.0"  },
+  java:       { language: "java",       version: "15.0.2"  },
+  python:     { language: "python",     version: "3.10.0"  },
+  javascript: { language: "javascript", version: "18.15.0" },
+};
+
+// Timeout threshold before falling back to Piston (ms)
+const WANDBOX_TIMEOUT_MS = 10000;
+
+// ------------------------------------
 // Parse REDIS_URL for BullMQ IORedis options
 // ------------------------------------
 const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
@@ -49,7 +66,7 @@ const connection = {
 // Execute code on Wandbox API
 // Returns { stdout, stderr, exitCode, isCompileError, compileError }
 // ------------------------------------
-export const executeOnWandbox = async (code, language, stdin) => {
+export const executeOnWandbox = async (code, language, stdin, signal) => {
   const compiler = COMPILER_MAP[language.toLowerCase()];
   if (!compiler) {
     throw new Error(`Unsupported language: ${language}`);
@@ -58,6 +75,7 @@ export const executeOnWandbox = async (code, language, stdin) => {
   const response = await fetch(`${WANDBOX_API_URL}/compile.json`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal,
     body: JSON.stringify({
       code,
       compiler,
@@ -84,16 +102,110 @@ export const executeOnWandbox = async (code, language, stdin) => {
   }
 
   // Check for runtime signal (SIGKILL = TLE, SIGSEGV = segfault, etc.)
-  const signal = result.signal || "";
+  const signal_ = result.signal || "";
   const status = parseInt(result.status, 10) || 0;
 
   return {
     stdout: result.program_output || "",
     stderr: result.program_error || "",
     exitCode: status,
-    signal,
+    signal: signal_,
     isCompileError: false,
   };
+};
+
+// ------------------------------------
+// Execute code on Piston API (Fallback)
+// Returns same format as executeOnWandbox
+// ------------------------------------
+export const executeOnPiston = async (code, language, stdin) => {
+  const config = PISTON_MAP[language.toLowerCase()];
+  if (!config) {
+    throw new Error(`Piston: Unsupported language: ${language}`);
+  }
+
+  const response = await fetch(PISTON_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      language: config.language,
+      version: config.version,
+      files: [{ content: code }],
+      stdin: stdin || "",
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Piston API error (${response.status}): ${errorText}`);
+  }
+
+  const result = await response.json();
+  const run = result.run || {};
+  const compile = result.compile || {};
+
+  // Check for compilation errors
+  if (compile.code !== undefined && compile.code !== 0) {
+    return {
+      stdout: "",
+      stderr: compile.stderr || compile.output || "",
+      exitCode: compile.code,
+      signal: "",
+      isCompileError: true,
+    };
+  }
+
+  return {
+    stdout: run.stdout || "",
+    stderr: run.stderr || "",
+    exitCode: run.code || 0,
+    signal: run.signal || "",
+    isCompileError: false,
+  };
+};
+
+// ------------------------------------
+// Smart Execution — Wandbox first, Piston fallback
+// Tries Wandbox with a timeout, falls back to Piston on failure
+// Also detects Wandbox infrastructure errors (OCI/container) in the response
+// ------------------------------------
+
+// Known Wandbox infrastructure error patterns (not user code errors)
+const INFRA_ERROR_PATTERNS = [
+  "OCI runtime error",
+  "crun:",
+  "container",
+  "Resource temporarily unavailable",
+  "runc:",
+  "podman",
+];
+
+const isInfrastructureError = (result) => {
+  const stderr = (result.stderr || "").toLowerCase();
+  return INFRA_ERROR_PATTERNS.some((pattern) => stderr.includes(pattern.toLowerCase()));
+};
+
+export const executeCode = async (code, language, stdin) => {
+  // Try Wandbox first with timeout
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), WANDBOX_TIMEOUT_MS);
+
+    const result = await executeOnWandbox(code, language, stdin, controller.signal);
+    clearTimeout(timeout);
+
+    // Check if Wandbox returned an infrastructure error (not a user code error)
+    if (isInfrastructureError(result)) {
+      console.warn(`⚠️ Wandbox returned infrastructure error: "${result.stderr.substring(0, 100)}". Falling back to Piston...`);
+    } else {
+      return result;
+    }
+  } catch (wandboxError) {
+    console.warn(`⚠️ Wandbox failed (${wandboxError.message}), falling back to Piston...`);
+  }
+
+  // Fallback to Piston
+  return await executeOnPiston(code, language, stdin);
 };
 
 // ------------------------------------
@@ -133,7 +245,7 @@ export const processSubmission = async (job) => {
       const testCase = testCases[i];
       const startTime = Date.now();
 
-      const result = await executeOnWandbox(code, language, testCase.input);
+      const result = await executeCode(code, language, testCase.input);
 
       const executionTime = Date.now() - startTime;
       maxExecutionTime = Math.max(maxExecutionTime, executionTime);
@@ -240,7 +352,7 @@ export const processSubmission = async (job) => {
     });
 
     if (problem?.topic) {
-      await updateUserTopicStat(userId, problem.topic, finalVerdict);
+      await updateUserTopicStat(userId, problem.topic);
     }
 
     // Invalidate user stats cache in Redis
@@ -271,45 +383,72 @@ export const processSubmission = async (job) => {
 // ------------------------------------
 // Update UserTopicStat Table
 // ------------------------------------
-const updateUserTopicStat = async (userId, topic, verdict) => {
-  const isAccepted = verdict === "ACCEPTED";
+export const updateUserTopicStat = async (userId, topic) => {
+  const difficultyWeights = { EASY: 1, MEDIUM: 2, HARD: 3 };
 
-  // Upsert: create if not exists, update if exists
-  const existing = await prisma.userTopicStat.findUnique({
+  // 1. Fetch unique solved problems on this topic for this user
+  const solvedProblems = await prisma.submission.findMany({
+    where: {
+      userId,
+      verdict: "ACCEPTED",
+      problem: { topic },
+    },
+    select: {
+      problem: {
+        select: { difficulty: true },
+      },
+    },
+    distinct: ["problemId"],
+  });
+
+  // 2. Fetch all unique attempted problems on this topic for this user
+  const attemptedProblems = await prisma.submission.findMany({
+    where: {
+      userId,
+      problem: { topic },
+    },
+    select: {
+      problemId: true,
+    },
+    distinct: ["problemId"],
+  });
+
+  const solvedCount = solvedProblems.length;
+  const attemptedCount = attemptedProblems.length;
+  const failedCount = Math.max(0, attemptedCount - solvedCount);
+
+  // 3. Sum up the difficulty weights of solved problems
+  const solvedWeight = solvedProblems.reduce((acc, curr) => {
+    return acc + (difficultyWeights[curr.problem.difficulty] || 1);
+  }, 0);
+
+  // 4. Calculate stats using consistent formulas
+  const accuracy = attemptedCount > 0 ? (solvedCount / attemptedCount) * 100 : 0;
+  const confidence = Math.min(100, (accuracy * Math.log2(solvedWeight + 1)) / 5);
+
+  const finalAccuracy = parseFloat(accuracy.toFixed(2));
+  const finalConfidence = parseFloat(confidence.toFixed(2));
+
+  // 5. Upsert statistics in UserTopicStat table
+  await prisma.userTopicStat.upsert({
     where: {
       userId_topic: { userId, topic },
     },
+    update: {
+      solved: solvedCount,
+      failed: failedCount,
+      accuracy: finalAccuracy,
+      confidenceScore: finalConfidence,
+    },
+    create: {
+      userId,
+      topic,
+      solved: solvedCount,
+      failed: failedCount,
+      accuracy: finalAccuracy,
+      confidenceScore: finalConfidence,
+    },
   });
-
-  if (existing) {
-    const newSolved = existing.solved + (isAccepted ? 1 : 0);
-    const newFailed = existing.failed + (isAccepted ? 0 : 1);
-    const total = newSolved + newFailed;
-    const newAccuracy = total > 0 ? (newSolved / total) * 100 : 0;
-    // Confidence grows with more attempts, weighted by accuracy
-    const newConfidence = Math.min(100, (newAccuracy * Math.log2(total + 1)) / 5);
-
-    await prisma.userTopicStat.update({
-      where: { userId_topic: { userId, topic } },
-      data: {
-        solved: newSolved,
-        failed: newFailed,
-        accuracy: parseFloat(newAccuracy.toFixed(2)),
-        confidenceScore: parseFloat(newConfidence.toFixed(2)),
-      },
-    });
-  } else {
-    await prisma.userTopicStat.create({
-      data: {
-        userId,
-        topic,
-        solved: isAccepted ? 1 : 0,
-        failed: isAccepted ? 0 : 1,
-        accuracy: isAccepted ? 100 : 0,
-        confidenceScore: isAccepted ? 13.86 : 0, // log2(2)/5 * 100
-      },
-    });
-  }
 };
 
 // ------------------------------------

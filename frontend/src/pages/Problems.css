@@ -401,3 +401,34 @@
     position: static;
   }
 }
+
+/* Solved Status Column Styling */
+.solved-tick-icon {
+  color: var(--color-success);
+  font-size: 1rem;
+  filter: drop-shadow(0 0 2px rgba(16, 185, 129, 0.3));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: scaleInTick 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.unsolved-dot-icon {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.12);
+  display: inline-block;
+  vertical-align: middle;
+}
+
+@keyframes scaleInTick {
+  from {
+    transform: scale(0);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

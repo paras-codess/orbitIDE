@@ -40,64 +40,119 @@ export const getProblems = async (req, res) => {
     // Build unique cache key based on query parameters
     const cacheKey = `problems:list:page_${pageNum}:limit_${limitNum}:diff_${difficulty || "all"}:topic_${topic || "all"}:q_${search || "all"}`;
 
+    // Fetch count & data in parallel (if not in cache)
+    let total;
+    let problems;
+    let source = "database";
+    let isFromCache = false;
+
     // Try to get from Redis cache
     if (redis.status === "ready") {
       try {
         const cachedData = await redis.get(cacheKey);
         if (cachedData) {
-          // console.log("💾 Serving problems list from Redis cache");
-          return res.json({
-            status: "success",
-            source: "cache",
-            ...JSON.parse(cachedData),
-          });
+          const parsed = JSON.parse(cachedData);
+          problems = parsed.data.problems;
+          total = parsed.data.pagination.total;
+          source = "cache";
+          isFromCache = true;
         }
       } catch (err) {
         console.warn("⚠️ Redis read error in getProblems:", err.message);
       }
     }
 
-    // Build Prisma query filter
-    const whereClause = {};
+    if (!isFromCache) {
+      // Build Prisma query filter
+      const whereClause = {};
 
-    if (difficulty) {
-      whereClause.difficulty = difficulty.toUpperCase();
+      if (difficulty) {
+        whereClause.difficulty = difficulty.toUpperCase();
+      }
+
+      if (topic) {
+        whereClause.topic = { equals: topic, mode: "insensitive" };
+      }
+
+      if (search) {
+        whereClause.OR = [
+          { title: { contains: search, mode: "insensitive" } },
+          { description: { contains: search, mode: "insensitive" } },
+        ];
+      }
+
+      const [totalCount, dbProblems] = await Promise.all([
+        prisma.problem.count({ where: whereClause }),
+        prisma.problem.findMany({
+          where: whereClause,
+          skip,
+          take: limitNum,
+          select: {
+            id: true,
+            title: true,
+            difficulty: true,
+            topic: true,
+            subtopic: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+        }),
+      ]);
+      total = totalCount;
+      problems = dbProblems;
+
+      // Store the raw database response in Redis if connected
+      if (redis.status === "ready") {
+        try {
+          const rawPayload = {
+            data: {
+              problems,
+              pagination: {
+                total,
+                page: pageNum,
+                limit: limitNum,
+                totalPages: Math.ceil(total / limitNum),
+              },
+            },
+          };
+          await redis.setex(cacheKey, CACHE_TTL, JSON.stringify(rawPayload));
+        } catch (err) {
+          console.warn("⚠️ Redis write error in getProblems:", err.message);
+        }
+      }
     }
 
-    if (topic) {
-      whereClause.topic = { equals: topic, mode: "insensitive" };
-    }
-
-    if (search) {
-      whereClause.OR = [
-        { title: { contains: search, mode: "insensitive" } },
-        { description: { contains: search, mode: "insensitive" } },
-      ];
-    }
-
-    // Fetch count & data in parallel
-    const [total, problems] = await Promise.all([
-      prisma.problem.count({ where: whereClause }),
-      prisma.problem.findMany({
-        where: whereClause,
-        skip,
-        take: limitNum,
-        select: {
-          id: true,
-          title: true,
-          difficulty: true,
-          topic: true,
-          subtopic: true,
-          createdAt: true,
+    // Enrich problems with isSolved status specific to the authenticated user
+    let enrichedProblems = problems;
+    if (req.user) {
+      const problemIds = problems.map((p) => p.id);
+      const solvedSubmissions = await prisma.submission.findMany({
+        where: {
+          userId: req.user.id,
+          problemId: { in: problemIds },
+          verdict: "ACCEPTED",
         },
-        orderBy: { createdAt: "desc" },
-      }),
-    ]);
+        select: { problemId: true },
+        distinct: ["problemId"],
+      });
+      const solvedProblemIds = new Set(solvedSubmissions.map((s) => s.problemId));
+      enrichedProblems = problems.map((p) => ({
+        ...p,
+        isSolved: solvedProblemIds.has(p.id),
+      }));
+    } else {
+      enrichedProblems = problems.map((p) => ({
+        ...p,
+        isSolved: false,
+      }));
+    }
 
     const totalPages = Math.ceil(total / limitNum);
-    const responsePayload = {
+    return res.json({
+      status: "success",
+      source,
       data: {
-        problems,
+        problems: enrichedProblems,
         pagination: {
           total,
           page: pageNum,
@@ -105,21 +160,6 @@ export const getProblems = async (req, res) => {
           totalPages,
         },
       },
-    };
-
-    // Store in Redis if connected
-    if (redis.status === "ready") {
-      try {
-        await redis.setex(cacheKey, CACHE_TTL, JSON.stringify(responsePayload));
-      } catch (err) {
-        console.warn("⚠️ Redis write error in getProblems:", err.message);
-      }
-    }
-
-    return res.json({
-      status: "success",
-      source: "database",
-      ...responsePayload,
     });
   } catch (error) {
     console.error("Get problems error:", error);

@@ -41,6 +41,8 @@ prisma/migrations/.migration_lock.toml
 docker-compose.override.yml
 
 # Misc
-*.local
 dist-ssr/
 coverage/
+
+# Local Piston Sandbox Data
+piston_data/
