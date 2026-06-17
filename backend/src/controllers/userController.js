@@ -137,53 +137,38 @@ export const getUserStats = async (req, res) => {
     });
 
     // 7. Personalized practice recommendations (up to 5 unsolved problems)
-    let recommendedProblems = [];
+    // We sort unsolved problems by their topic's confidence score (ascending), then by difficulty.
+    const topicConfidenceMap = new Map(
+      topicStats.map((stat) => [stat.topic.toLowerCase(), stat.confidenceScore])
+    );
+
+    const unsolvedProblems = await prisma.problem.findMany({
+      where: {
+        id: { notIn: solvedProblemIds },
+      },
+      select: {
+        id: true,
+        title: true,
+        difficulty: true,
+        topic: true,
+      },
+    });
+
     const difficultyOrder = { EASY: 1, MEDIUM: 2, HARD: 3 };
-    const sortProblems = (a, b) =>
-      difficultyOrder[a.difficulty] - difficultyOrder[b.difficulty];
+    unsolvedProblems.sort((a, b) => {
+      const confA = topicConfidenceMap.get(a.topic?.toLowerCase() || "") ?? 0;
+      const confB = topicConfidenceMap.get(b.topic?.toLowerCase() || "") ?? 0;
 
-    const weakTopics = confidenceTiers.weak;
+      if (confA !== confB) {
+        return confA - confB; // Lower confidence score first
+      }
 
-    if (weakTopics.length > 0) {
-      const weakProblems = await prisma.problem.findMany({
-        where: {
-          id: { notIn: solvedProblemIds },
-          topic: { in: weakTopics },
-        },
-        select: {
-          id: true,
-          title: true,
-          difficulty: true,
-          topic: true,
-        },
-        take: 15, // Fetch slightly more to sort in-memory
-      });
+      const diffA = difficultyOrder[a.difficulty] || 99;
+      const diffB = difficultyOrder[b.difficulty] || 99;
+      return diffA - diffB; // Easiest first
+    });
 
-      weakProblems.sort(sortProblems);
-      recommendedProblems = weakProblems.slice(0, 5);
-    }
-
-    if (recommendedProblems.length < 5) {
-      const currentIds = recommendedProblems.map((p) => p.id);
-      const remainingCount = 5 - recommendedProblems.length;
-
-      const additionalProblems = await prisma.problem.findMany({
-        where: {
-          id: {
-            notIn: [...solvedProblemIds, ...currentIds],
-          },
-        },
-        select: {
-          id: true,
-          title: true,
-          difficulty: true,
-          topic: true,
-        },
-        take: remainingCount,
-      });
-
-      recommendedProblems = [...recommendedProblems, ...additionalProblems];
-    }
+    const recommendedProblems = unsolvedProblems.slice(0, 5);
 
     // 8. Cache response payload in Redis
     const responsePayload = {

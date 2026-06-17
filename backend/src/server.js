@@ -7,6 +7,7 @@ import authRoutes from "./routes/authRoutes.js";
 import problemRoutes from "./routes/problemRoutes.js";
 import submissionRoutes from "./routes/submissionRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
+import visualizerRoutes from "./routes/visualizerRoutes.js";
 import { generalLimiter, authLimiter } from "./middleware/rateLimiter.js";
 import { startSubmissionWorker } from "./services/submissionWorker.js";
 import { initSocket } from "./config/socket.js";
@@ -59,6 +60,7 @@ app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/problems", problemRoutes);
 app.use("/api/submissions", submissionRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/visualize", visualizerRoutes);
 // app.use("/api/contests", contestRoutes); // Phase 8
 
 // ------------------------------------
