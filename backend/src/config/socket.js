@@ -27,6 +27,14 @@ export const initSocket = (httpServer) => {
       }
     });
 
+    // Join room for custom contests
+    socket.on("join-contest-room", (contestId) => {
+      if (contestId) {
+        socket.join(`contest:${contestId}`);
+        console.log(`🏆 Client ${socket.id} joined contest room: contest:${contestId}`);
+      }
+    });
+
     socket.on("disconnect", () => {
       console.log(`🔌 Client disconnected: ${socket.id}`);
     });
@@ -64,5 +72,37 @@ export const emitSubmissionVerdict = (userId, payload) => {
     console.log(`📤 Live verdict pushed to user room [${userId}] for submission ${payload.submissionId}`);
   } catch (error) {
     console.error("⚠️ Failed to emit live submission verdict over WebSocket:", error.message);
+  }
+};
+
+/**
+ * Emit a leaderboard update event to a specific contest room.
+ * 
+ * @param {string} contestId - The contest ID
+ * @param {Array} leaderboard - The updated leaderboard data
+ */
+export const emitLeaderboardUpdate = (contestId, leaderboard) => {
+  try {
+    const activeIo = getIO();
+    activeIo.to(`contest:${contestId}`).emit("leaderboard-update", leaderboard);
+    console.log(`📤 Leaderboard update pushed to contest room [contest:${contestId}]`);
+  } catch (error) {
+    console.error("⚠️ Failed to emit leaderboard update over WebSocket:", error.message);
+  }
+};
+
+/**
+ * Emit a contest start event to a specific contest room.
+ * 
+ * @param {string} contestId - The contest ID
+ * @param {string} startTime - The ISO string of start time
+ */
+export const emitContestStart = (contestId, startTime) => {
+  try {
+    const activeIo = getIO();
+    activeIo.to(`contest:${contestId}`).emit("contest-start", { startTime });
+    console.log(`📤 Contest start event emitted to room [contest:${contestId}]`);
+  } catch (error) {
+    console.error("⚠️ Failed to emit contest start over WebSocket:", error.message);
   }
 };

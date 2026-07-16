@@ -155,7 +155,7 @@ export const runCode = async (req, res) => {
 // ------------------------------------
 export const submitCode = async (req, res) => {
   try {
-    const { problemId, language, code } = req.body;
+    const { problemId, language, code, contestId } = req.body;
     const userId = req.user.id;
 
     // ---- Validation ----
@@ -187,11 +187,64 @@ export const submitCode = async (req, res) => {
       });
     }
 
+    // ---- Verify contest active state if contestId is provided ----
+    let validatedContestId = null;
+    if (contestId) {
+      const contest = await prisma.contest.findUnique({
+        where: { id: contestId },
+      });
+      if (!contest) {
+        return res.status(404).json({
+          status: "error",
+          message: "Contest not found.",
+        });
+      }
+
+      // Check if user is a participant
+      const participant = await prisma.contestParticipant.findUnique({
+        where: {
+          contestId_userId: {
+            contestId,
+            userId,
+          },
+        },
+      });
+
+      if (!participant) {
+        return res.status(403).json({
+          status: "error",
+          message: "You are not registered in this contest.",
+        });
+      }
+
+      // Check if the contest has started for this participant
+      const contestStartTime = contest.type === "ROOM" ? contest.startTime : participant.startedAt;
+      if (!contestStartTime) {
+        return res.status(400).json({
+          status: "error",
+          message: "The contest has not started yet.",
+        });
+      }
+
+      // Check if the timer has expired
+      const durationMs = contest.duration * 60 * 1000;
+      const elapsedMs = Date.now() - new Date(contestStartTime).getTime();
+      if (elapsedMs > durationMs) {
+        return res.status(400).json({
+          status: "error",
+          message: "Contest timer has expired. Submissions are closed.",
+        });
+      }
+
+      validatedContestId = contestId;
+    }
+
     // ---- Create submission row (PENDING) ----
     const submission = await prisma.submission.create({
       data: {
         userId,
         problemId,
+        contestId: validatedContestId,
         language: language.toLowerCase(),
         code,
         verdict: "PENDING",

@@ -7,6 +7,7 @@ function Problems() {
   // Filter and pagination state
   const [problems, setProblems] = useState([]);
   const [topics, setTopics] = useState([]);
+  const [showTopics, setShowTopics] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -246,15 +247,26 @@ function Problems() {
             </div>
           ) : (
             <>
+              {/* Table Options Bar */}
+              <div className="table-header-options">
+                <button
+                  type="button"
+                  className={`toggle-topics-btn ${showTopics ? "active" : ""}`}
+                  onClick={() => setShowTopics((prev) => !prev)}
+                >
+                  📁 {showTopics ? "Hide Topics" : "Show Topics"}
+                </button>
+              </div>
+
               {/* Problem Table */}
               <div className="table-container">
                 <table className="problems-table">
                   <thead>
                     <tr>
                       <th style={{ width: "8%", textAlign: "center" }}>Status</th>
-                      <th style={{ width: "52%" }}>Problem Title</th>
+                      <th style={{ width: showTopics ? "45%" : "65%" }}>Problem Title</th>
                       <th style={{ width: "20%" }}>Difficulty</th>
-                      <th style={{ width: "20%" }}>Topic</th>
+                      {showTopics && <th style={{ width: "27%" }}>Topic</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -277,9 +289,22 @@ function Problems() {
                             {prob.difficulty.toLowerCase()}
                           </span>
                         </td>
-                        <td>
-                          <span className="topic-badge">{prob.topic}</span>
-                        </td>
+                        {showTopics && (
+                          <td>
+                            <div className="topic-badges-container">
+                              <span className="topic-badge">{prob.topic}</span>
+                              {prob.subtopic && (
+                                <div className="subtopic-badges">
+                                  {prob.subtopic.split(",").map((sub, idx) => (
+                                    <span key={idx} className="subtopic-badge">
+                                      {sub.trim()}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>

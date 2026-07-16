@@ -9,6 +9,8 @@ import Problems from "./pages/Problems.jsx";
 import ProblemWorkspace from "./pages/ProblemWorkspace.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Visualizer from "./pages/Visualizer.jsx";
+import ContestList from "./pages/ContestList.jsx";
+import ContestArena from "./pages/ContestArena.jsx";
 
 function App() {
   return (
@@ -26,6 +28,8 @@ function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/profile" element={<Dashboard />} />
           <Route path="/visualizer" element={<Visualizer />} />
+          <Route path="/contests" element={<ContestList />} />
+          <Route path="/contests/:id" element={<ContestArena />} />
         </Routes>
       </main>
     </div>

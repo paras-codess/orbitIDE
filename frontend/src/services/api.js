@@ -98,10 +98,10 @@ export const submissionsAPI = {
       body: JSON.stringify({ problemId, language, code, ...(customTestCases ? { customTestCases } : {}) }),
     }),
 
-  submitCode: (problemId, language, code) =>
+  submitCode: (problemId, language, code, contestId = null) =>
     request("/submissions/submit", {
       method: "POST",
-      body: JSON.stringify({ problemId, language, code }),
+      body: JSON.stringify({ problemId, language, code, ...(contestId ? { contestId } : {}) }),
     }),
 
   getSubmissionStatus: (id) => request(`/submissions/${id}/status`),
@@ -129,5 +129,33 @@ export const visualizerAPI = {
       method: "POST",
       body: JSON.stringify({ language, code, stdin }),
     }),
+};
+
+/**
+ * Contest API functions
+ */
+export const contestAPI = {
+  getContests: () => request("/contests"),
+
+  createContest: (data) =>
+    request("/contests", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  joinContest: (code) =>
+    request("/contests/join", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+
+  startContest: (id) =>
+    request(`/contests/${id}/start`, {
+      method: "POST",
+    }),
+
+  getContestDetails: (id) => request(`/contests/${id}`),
+
+  getContestLeaderboard: (id) => request(`/contests/${id}/leaderboard`),
 };
 

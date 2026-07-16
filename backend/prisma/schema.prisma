@@ -102,6 +102,7 @@ model Submission {
   id            String   @id @default(uuid())
   userId        String   @map("user_id")
   problemId     String   @map("problem_id")
+  contestId     String?  @map("contest_id")
   language      String
   code          String   @db.Text
   verdict       Verdict  @default(PENDING)
@@ -110,12 +111,14 @@ model Submission {
   createdAt     DateTime @default(now()) @map("created_at")
 
   // Relations
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  problem Problem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  problem Problem  @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  contest Contest? @relation(fields: [contestId], references: [id], onDelete: Cascade)
 
   @@map("submissions")
   @@index([userId])
   @@index([problemId])
+  @@index([contestId])
 }
 
 enum Verdict {
@@ -151,12 +154,21 @@ model UserTopicStat {
 // ==========================================
 // CONTEST MODEL
 // ==========================================
+enum ContestType {
+  SOLO
+  ROOM
+  SCHEDULED
+}
+
 model Contest {
   id          String   @id @default(uuid())
   title       String
   description String?  @db.Text
-  startTime   DateTime @map("start_time")
-  endTime     DateTime @map("end_time")
+  startTime   DateTime? @map("start_time")
+  endTime     DateTime? @map("end_time")
+  duration    Int?     // Duration in minutes
+  type        ContestType @default(SOLO)
+  code        String?  @unique // Join code for ROOM contests
   createdBy   String   @map("created_by")
   isPublic    Boolean  @default(true) @map("is_public")
   createdAt   DateTime @default(now()) @map("created_at")
@@ -164,6 +176,7 @@ model Contest {
   creator      User                 @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   problems     ContestProblem[]
   participants ContestParticipant[]
+  submissions  Submission[]
 
   @@map("contests")
   @@index([createdBy])
@@ -197,6 +210,8 @@ model ContestParticipant {
   score     Int      @default(0)
   penalty   Int      @default(0)
   joinedAt  DateTime @default(now()) @map("joined_at")
+  startedAt DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
 
   contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)

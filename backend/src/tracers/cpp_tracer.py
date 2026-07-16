@@ -16,9 +16,51 @@ import os
 import tempfile
 import re
 import platform
+import shutil
+import glob
 
 MAX_STEPS = 2000
 TIMEOUT_SECONDS = 10
+
+
+def find_compiler(name):
+    """Find compiler executable, searching common Windows install paths if not on PATH."""
+    # First check if it's already on PATH
+    found = shutil.which(name)
+    if found:
+        return found
+
+    # On Windows, search common MinGW/WinLibs install locations
+    if platform.system() == "Windows":
+        search_paths = [
+            # WinGet installs (WinLibs)
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages"),
+            # Common manual installs
+            r"C:\mingw64\bin",
+            r"C:\mingw\bin",
+            r"C:\msys64\mingw64\bin",
+            r"C:\msys64\usr\bin",
+            r"C:\Program Files\mingw-w64\*\mingw64\bin",
+            r"C:\Program Files (x86)\mingw-w64\*\mingw64\bin",
+        ]
+        for search_path in search_paths:
+            # Handle glob patterns
+            if "*" in search_path:
+                matches = glob.glob(os.path.join(search_path, f"{name}.exe"))
+                if matches:
+                    return matches[0]
+            else:
+                # For WinGet packages dir, search recursively
+                if "WinGet" in search_path and os.path.isdir(search_path):
+                    for root, dirs, files in os.walk(search_path):
+                        if f"{name}.exe" in files:
+                            return os.path.join(root, f"{name}.exe")
+                else:
+                    candidate = os.path.join(search_path, f"{name}.exe")
+                    if os.path.isfile(candidate):
+                        return candidate
+
+    return None
 
 
 def run_gdb_trace(exe_path, code_file, stdin_file, num_lines):
@@ -129,7 +171,13 @@ def compile_and_trace(code_file, language, stdin_file):
     into the code before compilation.
     """
     # Determine compiler
-    compiler = "g++" if language == "cpp" else "gcc"
+    compiler_name = "g++" if language == "cpp" else "gcc"
+    compiler = find_compiler(compiler_name)
+    if not compiler:
+        return {
+            "error": f"'{compiler_name}' not found. Please install MinGW-w64 and add it to your system PATH.",
+            "traces": []
+        }
     ext = ".cpp" if language == "cpp" else ".c"
 
     # Read source code
@@ -144,12 +192,25 @@ def compile_and_trace(code_file, language, stdin_file):
     exe_path = os.path.join(tmp_dir, "prog.exe" if platform.system() == "Windows" else "prog")
 
     # Compile with debug symbols
-    compile_result = subprocess.run(
-        [compiler, code_file, "-o", exe_path, "-g", "-std=c++17" if language == "cpp" else "-std=c11"],
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_SECONDS
-    )
+    try:
+        compile_result = subprocess.run(
+            [compiler, code_file, "-o", exe_path, "-g", "-std=c++17" if language == "cpp" else "-std=c11"],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS
+        )
+    except FileNotFoundError:
+        cleanup(tmp_dir)
+        return {
+            "error": f"'{compiler}' not found. Please install {'MinGW-w64 (g++)' if language == 'cpp' else 'MinGW-w64 (gcc)'} and add it to your system PATH.",
+            "traces": []
+        }
+    except subprocess.TimeoutExpired:
+        cleanup(tmp_dir)
+        return {
+            "error": "Compilation timed out (10s).",
+            "traces": []
+        }
 
     if compile_result.returncode != 0:
         cleanup(tmp_dir)

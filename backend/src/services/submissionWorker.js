@@ -1,8 +1,9 @@
 import { Worker } from "bullmq";
 import prisma from "../config/db.js";
 import dotenv from "dotenv";
-import { emitSubmissionVerdict } from "../config/socket.js";
+import { emitSubmissionVerdict, emitLeaderboardUpdate } from "../config/socket.js";
 import redis from "../config/redis.js";
+import { computeContestLeaderboard } from "../controllers/contestController.js";
 
 dotenv.config();
 
@@ -217,6 +218,11 @@ export const processSubmission = async (job) => {
   console.log(`⚙️  Processing submission ${submissionId} [${language}]`);
 
   try {
+    const submission = await prisma.submission.findUnique({
+      where: { id: submissionId },
+      select: { contestId: true },
+    });
+    const isContest = !!(submission && submission.contestId);
     // 1. Validate language
     if (!COMPILER_MAP[language.toLowerCase()]) {
       throw new Error(`Unsupported language: ${language}`);
@@ -250,13 +256,13 @@ export const processSubmission = async (job) => {
       const executionTime = Date.now() - startTime;
       maxExecutionTime = Math.max(maxExecutionTime, executionTime);
 
-      // Build per-test result object (respecting isHidden flag)
+      // Build per-test result object
       const testResult = {
         testNumber: i + 1,
         passed: false,
         verdict: "PASSED",
         executionTime,
-        isHidden: testCase.isHidden,
+        isHidden: false,
       };
 
       // Check for compilation error
@@ -281,6 +287,8 @@ export const processSubmission = async (job) => {
         }
         failedTestIndex = i + 1;
         testResult.errorMessage = result.stderr ? result.stderr.substring(0, 500) : undefined;
+        testResult.input = testCase.input;
+        testResult.expectedOutput = (testCase.output || "").trim();
         testResults.push(testResult);
         console.log(`❌ Test ${i + 1}: ${finalVerdict} (signal: ${result.signal})`);
         break;
@@ -292,6 +300,8 @@ export const processSubmission = async (job) => {
         failedTestIndex = i + 1;
         testResult.verdict = "RUNTIME_ERROR";
         testResult.errorMessage = result.stderr ? result.stderr.substring(0, 500) : undefined;
+        testResult.input = testCase.input;
+        testResult.expectedOutput = (testCase.output || "").trim();
         testResults.push(testResult);
         console.log(`❌ Test ${i + 1}: Runtime Error (exit code: ${result.exitCode})`);
         break;
@@ -305,12 +315,9 @@ export const processSubmission = async (job) => {
         finalVerdict = "WRONG_ANSWER";
         failedTestIndex = i + 1;
         testResult.verdict = "WRONG_ANSWER";
-        // Only expose input/output for non-hidden test cases
-        if (!testCase.isHidden) {
-          testResult.input = testCase.input;
-          testResult.expectedOutput = expectedOutput;
-          testResult.actualOutput = actualOutput;
-        }
+        testResult.input = testCase.input;
+        testResult.expectedOutput = expectedOutput;
+        testResult.actualOutput = actualOutput;
         testResults.push(testResult);
         console.log(`❌ Test ${i + 1}: Wrong Answer (expected "${expectedOutput.substring(0, 50)}", got "${actualOutput.substring(0, 50)}")`);
         break;
@@ -323,20 +330,43 @@ export const processSubmission = async (job) => {
     }
 
     // 4. Update the Submission record in DB
-    await prisma.submission.update({
+    const updatedSubmission = await prisma.submission.update({
       where: { id: submissionId },
       data: {
         verdict: finalVerdict,
         executionTime: maxExecutionTime,
         memoryUsage: maxMemoryUsage,
       },
+      select: {
+        id: true,
+        userId: true,
+        problemId: true,
+        contestId: true,
+        verdict: true,
+      },
     });
+
+    // If this submission belongs to a contest, evaluate scoring
+    if (updatedSubmission.contestId) {
+      try {
+        await handleContestScoring(
+          updatedSubmission.contestId,
+          updatedSubmission.userId,
+          updatedSubmission.problemId,
+          updatedSubmission.verdict,
+          updatedSubmission.id
+        );
+      } catch (scoringError) {
+        console.error(`⚠️ Failed to calculate contest scoring for submission ${submissionId}:`, scoringError.message);
+      }
+    }
 
     console.log(`✅ Submission ${submissionId} → ${finalVerdict} (${maxExecutionTime}ms)`);
 
     // 5. Emit live WebSocket verdict notification to user
     emitSubmissionVerdict(userId, {
       submissionId,
+      problemId: updatedSubmission.problemId,
       verdict: finalVerdict,
       executionTime: maxExecutionTime,
       memoryUsage: maxMemoryUsage,
@@ -377,6 +407,77 @@ export const processSubmission = async (job) => {
     });
 
     throw error; // BullMQ will retry based on job options
+  }
+};
+
+/**
+ * Handles contest score and penalty updates when a contest submission is graded
+ */
+export const handleContestScoring = async (contestId, userId, problemId, verdict, currentSubmissionId) => {
+  try {
+    // 1. Fetch contest details
+    const contest = await prisma.contest.findUnique({
+      where: { id: contestId },
+    });
+    if (!contest) return;
+
+    // 2. Fetch participant record
+    const participant = await prisma.contestParticipant.findUnique({
+      where: {
+        contestId_userId: { contestId, userId },
+      },
+    });
+    if (!participant) return;
+
+    // Check when user started the contest
+    const contestStartTime = contest.type === "ROOM" ? contest.startTime : participant.startedAt;
+    if (!contestStartTime) return;
+
+    // 3. Fetch all submissions for this user & problem in this contest
+    const submissions = await prisma.submission.findMany({
+      where: {
+        contestId,
+        userId,
+        problemId,
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    // Find the first accepted submission index
+    const solvedIdx = submissions.findIndex((s) => s.verdict === "ACCEPTED");
+
+    // We only compute scoring/penalty updates if this specific submission is the FIRST accepted solution
+    if (verdict === "ACCEPTED" && solvedIdx !== -1 && submissions[solvedIdx].id === currentSubmissionId) {
+      const startMs = new Date(contestStartTime).getTime();
+      const solvedMs = new Date(submissions[solvedIdx].createdAt).getTime();
+      const elapsedMinutes = Math.max(0, Math.floor((solvedMs - startMs) / 60000));
+
+      // Calculate number of failed submissions (excluding compilation error and submissions after the solved one)
+      const wrongAttempts = submissions.slice(0, solvedIdx).filter(
+        (s) => s.verdict !== "ACCEPTED" && s.verdict !== "COMPILATION_ERROR"
+      ).length;
+
+      // CP Rules Penalty: minutes elapsed + 20 mins per wrong attempt
+      const problemPenalty = elapsedMinutes + wrongAttempts * 20;
+
+      // Update participant stats
+      await prisma.contestParticipant.update({
+        where: {
+          contestId_userId: { contestId, userId },
+        },
+        data: {
+          score: { increment: 100 },
+          penalty: { increment: problemPenalty },
+        },
+      });
+
+    }
+
+    // 4. Retrieve updated leaderboard rankings with problem stats and broadcast them via WebSockets
+    const leaderboard = await computeContestLeaderboard(contestId);
+    emitLeaderboardUpdate(contestId, leaderboard);
+  } catch (error) {
+    console.error("❌ Error in handleContestScoring:", error.message);
   }
 };
 
